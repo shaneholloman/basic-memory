@@ -132,7 +132,7 @@ class BasicMemoryConfig(BaseSettings):
         description="Mapping of project names to their ProjectEntry configuration",
     )
     default_project: Optional[str] = Field(
-        default="main",
+        default=None,
         description="Name of the default project to use. When set, acts as fallback when no project parameter is specified. Set to null to disable automatic project resolution.",
     )
 
@@ -493,18 +493,25 @@ class BasicMemoryConfig(BaseSettings):
         if self.database_backend == DatabaseBackend.POSTGRES:  # pragma: no cover
             return  # pragma: no cover
 
-        # Ensure at least one project exists; if none exist then create main
-        if not self.projects:  # pragma: no cover
+        # Trigger: no projects configured (fresh install or empty config)
+        # Why: every config needs at least one project to be functional
+        # Outcome: creates "main" project using BASIC_MEMORY_HOME or ~/basic-memory
+        if not self.projects:
             self.projects["main"] = ProjectEntry(
                 path=str(Path(os.getenv("BASIC_MEMORY_HOME", Path.home() / "basic-memory")))
             )
 
-        # Ensure default project is valid (i.e. points to an existing project)
-        # None means "no default" — intentionally left unset
-        if (
-            self.default_project is not None and self.default_project not in self.projects
-        ):  # pragma: no cover
-            # Set default to first available project
+        # Trigger: default_project was not explicitly provided in the input data
+        #          (config file omitted the key, or BasicMemoryConfig() called with no args)
+        # Why: callers like get_project_config() expect a valid project name;
+        #      but explicit None (discovery mode) must be preserved
+        # Outcome: sets default_project to the first available project
+        if "default_project" not in self.model_fields_set:
+            self.default_project = next(iter(self.projects.keys()))
+        # Trigger: default_project was explicitly set but references a non-existent project
+        # Why: project may have been removed or renamed since config was saved
+        # Outcome: corrects to the first available project
+        elif self.default_project is not None and self.default_project not in self.projects:
             self.default_project = next(iter(self.projects.keys()))
 
     @property

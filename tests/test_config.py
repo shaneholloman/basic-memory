@@ -26,6 +26,7 @@ class TestBasicMemoryConfig:
         # Should use the default path (home/basic-memory)
         expected_path = config_home / "basic-memory"
         assert Path(config.projects["main"].path) == expected_path
+        assert config.default_project == "main"
 
     def test_respects_basic_memory_home_environment_variable(self, config_home, monkeypatch):
         """Test that config respects BASIC_MEMORY_HOME environment variable."""
@@ -65,6 +66,7 @@ class TestBasicMemoryConfig:
         # model_post_init should not add main project with BASIC_MEMORY_HOME
         assert "main" not in config.projects
         assert Path(config.projects["other"].path) == other_path
+        assert config.default_project == "other"
 
     def test_model_post_init_fallback_without_basic_memory_home(self, config_home, monkeypatch):
         """Test that model_post_init can set a non-main default when BASIC_MEMORY_HOME is not set."""
@@ -78,6 +80,7 @@ class TestBasicMemoryConfig:
         # model_post_init should not add main project, but "other" should now be the default
         assert "main" not in config.projects
         assert Path(config.projects["other"].path) == other_path
+        assert config.default_project == "other"
 
     def test_basic_memory_home_with_relative_path(self, config_home, monkeypatch):
         """Test that BASIC_MEMORY_HOME works with relative paths."""
@@ -120,6 +123,124 @@ class TestBasicMemoryConfig:
 
         assert config.data_dir_path == config_home / ".basic-memory"
         assert config.app_database_path == config_home / ".basic-memory" / "memory.db"
+
+    def test_explicit_default_project_preserved(self, config_home, monkeypatch):
+        """Test that a valid explicit default_project is not overwritten by model_post_init."""
+        monkeypatch.delenv("BASIC_MEMORY_HOME", raising=False)
+
+        config = BasicMemoryConfig(
+            projects={
+                "alpha": {"path": str(config_home / "alpha")},
+                "beta": {"path": str(config_home / "beta")},
+            },
+            default_project="beta",
+        )
+
+        assert config.default_project == "beta"
+
+    def test_invalid_default_project_corrected(self, config_home, monkeypatch):
+        """Test that an invalid default_project is corrected to the first project."""
+        monkeypatch.delenv("BASIC_MEMORY_HOME", raising=False)
+
+        config = BasicMemoryConfig(
+            projects={
+                "alpha": {"path": str(config_home / "alpha")},
+                "beta": {"path": str(config_home / "beta")},
+            },
+            default_project="nonexistent",
+        )
+
+        assert config.default_project == "alpha"
+
+    def test_no_default_project_key_uses_first_project(self, config_home, monkeypatch):
+        """Test that config without default_project key sets it to the first project."""
+        monkeypatch.delenv("BASIC_MEMORY_HOME", raising=False)
+
+        # Simulate loading a config file that has no default_project key —
+        # the field default (None) kicks in, and model_post_init resolves it
+        config = BasicMemoryConfig(
+            projects={
+                "research": {"path": str(config_home / "research")},
+                "notes": {"path": str(config_home / "notes")},
+            },
+        )
+
+        assert config.default_project == "research"
+
+    def test_empty_string_default_project_corrected(self, config_home, monkeypatch):
+        """Test that an empty-string default_project is corrected to the first project."""
+        monkeypatch.delenv("BASIC_MEMORY_HOME", raising=False)
+
+        config = BasicMemoryConfig(
+            projects={
+                "alpha": {"path": str(config_home / "alpha")},
+            },
+            default_project="",
+        )
+
+        # Empty string is not in projects, so model_post_init corrects it
+        assert config.default_project == "alpha"
+
+    def test_single_project_default_always_matches(self, config_home, monkeypatch):
+        """Test that a config with one project always resolves default_project to it."""
+        monkeypatch.delenv("BASIC_MEMORY_HOME", raising=False)
+
+        config = BasicMemoryConfig(
+            projects={"only": {"path": str(config_home / "only")}},
+        )
+
+        assert config.default_project == "only"
+
+    def test_stale_default_project_loaded_from_file(self, config_home, monkeypatch):
+        """Test that a config file with a stale default_project is corrected on load."""
+        import json
+        import basic_memory.config
+
+        monkeypatch.delenv("BASIC_MEMORY_HOME", raising=False)
+
+        config_manager = ConfigManager()
+        config_manager.config_dir = config_home / ".basic-memory"
+        config_manager.config_file = config_manager.config_dir / "config.json"
+        config_manager.config_dir.mkdir(parents=True, exist_ok=True)
+
+        # Write a config file where default_project references a removed project
+        config_data = {
+            "projects": {
+                "research": {"path": str(config_home / "research")},
+                "notes": {"path": str(config_home / "notes")},
+            },
+            "default_project": "deleted-project",
+        }
+        config_manager.config_file.write_text(json.dumps(config_data, indent=2))
+        basic_memory.config._CONFIG_CACHE = None
+
+        loaded = config_manager.load_config()
+        assert loaded.default_project == "research"
+
+    def test_config_file_without_default_project_key(self, config_home, monkeypatch):
+        """Test that a config file with no default_project key resolves dynamically."""
+        import json
+        import basic_memory.config
+
+        monkeypatch.delenv("BASIC_MEMORY_HOME", raising=False)
+
+        config_manager = ConfigManager()
+        config_manager.config_dir = config_home / ".basic-memory"
+        config_manager.config_file = config_manager.config_dir / "config.json"
+        config_manager.config_dir.mkdir(parents=True, exist_ok=True)
+
+        # Write a config file that deliberately omits default_project
+        config_data = {
+            "projects": {
+                "work": {"path": str(config_home / "work")},
+                "personal": {"path": str(config_home / "personal")},
+            },
+        }
+        config_manager.config_file.write_text(json.dumps(config_data, indent=2))
+        basic_memory.config._CONFIG_CACHE = None
+
+        loaded = config_manager.load_config()
+        assert loaded.default_project == "work"
 
 
 class TestConfigManager:
