@@ -941,3 +941,34 @@ async def test_search_metadata_filters_numeric_comparisons(search_repository, se
         metadata_filters={"schema.confidence": {"$between": [0.3, 0.6]}}
     )
     assert {result.id for result in results} == {entity_low.id}
+
+
+# --- SQL injection safety tests ---
+# These tests verify that user-supplied filter values are parameterized and cannot
+# alter query structure. Each test passes a malicious payload and asserts the query
+# completes safely (returning empty results) rather than causing a SQL error or
+# data exfiltration.
+
+
+@pytest.mark.asyncio
+async def test_note_types_sql_injection_returns_empty(search_repository):
+    """note_types with SQL injection payload must not alter query structure."""
+    malicious_payloads = [
+        "note' OR '1'='1",
+        "note'; DROP TABLE search_index;--",
+        'note" OR 1=1--',
+        "note') UNION SELECT * FROM entity--",
+    ]
+    for payload in malicious_payloads:
+        results = await search_repository.search(note_types=[payload])
+        # Injection should be treated as a literal string value, not executed as SQL
+        assert results == [], f"Injection payload should not match: {payload}"
+
+
+@pytest.mark.asyncio
+async def test_search_item_types_parameterized(search_repository):
+    """search_item_types enum values are parameterized, not interpolated."""
+    # Normal enum usage still works
+    results = await search_repository.search(search_item_types=[SearchItemType.ENTITY])
+    # Should not raise — parameterized query handles enum values safely
+    assert isinstance(results, list)

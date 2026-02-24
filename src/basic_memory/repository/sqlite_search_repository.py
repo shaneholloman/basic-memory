@@ -666,16 +666,24 @@ class SQLiteSearchRepository(SearchRepositoryBase):
                     params["permalink"] = permalink_text
                     match_conditions.append("search_index.permalink MATCH :permalink")
 
-        # Handle entity type filter
+        # Handle entity type filter (parameterized for defense-in-depth)
         if search_item_types:
-            type_list = ", ".join(f"'{t.value}'" for t in search_item_types)
-            conditions.append(f"search_index.type IN ({type_list})")
+            type_placeholders = []
+            for idx, t in enumerate(search_item_types):
+                param_name = f"search_type_{idx}"
+                params[param_name] = t.value
+                type_placeholders.append(f":{param_name}")
+            conditions.append(f"search_index.type IN ({', '.join(type_placeholders)})")
 
-        # Handle note type filter (frontmatter type field)
+        # Handle note type filter (frontmatter type field, parameterized)
         if note_types:
-            type_list = ", ".join(f"'{t}'" for t in note_types)
+            type_placeholders = []
+            for idx, t in enumerate(note_types):
+                param_name = f"note_type_{idx}"
+                params[param_name] = t
+                type_placeholders.append(f":{param_name}")
             conditions.append(
-                f"json_extract(search_index.metadata, '$.note_type') IN ({type_list})"
+                f"json_extract(search_index.metadata, '$.note_type') IN ({', '.join(type_placeholders)})"
             )
 
         # Handle date filter using datetime() for proper comparison

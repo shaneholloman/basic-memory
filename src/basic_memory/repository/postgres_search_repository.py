@@ -16,10 +16,7 @@ from basic_memory.repository.embedding_provider import EmbeddingProvider
 from basic_memory.repository.embedding_provider_factory import create_embedding_provider
 from basic_memory.repository.search_index_row import SearchIndexRow
 from basic_memory.repository.search_repository_base import SearchRepositoryBase
-from basic_memory.repository.metadata_filters import (
-    parse_metadata_filters,
-    build_postgres_json_path,
-)
+from basic_memory.repository.metadata_filters import parse_metadata_filters
 from basic_memory.repository.semantic_errors import SemanticDependenciesMissingError
 from basic_memory.schemas.search import SearchItemType, SearchRetrievalMode
 
@@ -677,19 +674,23 @@ class PostgresSearchRepository(SearchRepositoryBase):
             else:
                 conditions.append("search_index.permalink = :permalink")
 
-        # Handle search item type filter
+        # Handle search item type filter (parameterized for defense-in-depth)
         if search_item_types:
-            type_list = ", ".join(f"'{t.value}'" for t in search_item_types)
-            conditions.append(f"search_index.type IN ({type_list})")
+            type_placeholders = []
+            for idx, t in enumerate(search_item_types):
+                param_name = f"search_type_{idx}"
+                params[param_name] = t.value
+                type_placeholders.append(f":{param_name}")
+            conditions.append(f"search_index.type IN ({', '.join(type_placeholders)})")
 
-        # Handle note type filter using JSONB containment (frontmatter type field)
+        # Handle note type filter using JSONB containment (parameterized)
         if note_types:
-            # Use JSONB @> operator for efficient containment queries
             type_conditions = []
-            for note_type in note_types:
-                # Create JSONB containment condition for each note type
+            for idx, note_type in enumerate(note_types):
+                param_name = f"note_type_{idx}"
+                params[param_name] = json.dumps({"note_type": note_type})
                 type_conditions.append(
-                    f'search_index.metadata @> \'{{"note_type": "{note_type}"}}\''
+                    f"search_index.metadata @> CAST(:{param_name} AS jsonb)"
                 )
             conditions.append(f"({' OR '.join(type_conditions)})")
 
@@ -701,15 +702,23 @@ class PostgresSearchRepository(SearchRepositoryBase):
             order_by_clause = ", search_index.updated_at DESC"
 
         # Handle structured metadata filters (frontmatter)
+        # Uses jsonb_extract_path_text() / jsonb_extract_path() with parameterized
+        # path parts instead of #>> / #> with interpolated paths.
         if metadata_filters:
             parsed_filters = parse_metadata_filters(metadata_filters)
             from_clause = "search_index JOIN entity ON search_index.entity_id = entity.id"
             metadata_expr = "entity.entity_metadata::jsonb"
 
             for idx, filt in enumerate(parsed_filters):
-                path = build_postgres_json_path(filt.path_parts)
-                text_expr = f"({metadata_expr} #>> '{path}')"
-                json_expr = f"({metadata_expr} #> '{path}')"
+                # Parameterize each JSON path part individually
+                path_param_names = []
+                for j, part in enumerate(filt.path_parts):
+                    path_param = f"meta_path_{idx}_{j}"
+                    params[path_param] = part
+                    path_param_names.append(f":{path_param}")
+                path_args = ", ".join(path_param_names)
+                text_expr = f"jsonb_extract_path_text({metadata_expr}, {path_args})"
+                json_expr = f"jsonb_extract_path({metadata_expr}, {path_args})"
 
                 if filt.op == "eq":
                     value_param = f"meta_val_{idx}"
@@ -727,14 +736,12 @@ class PostgresSearchRepository(SearchRepositoryBase):
                     continue
 
                 if filt.op == "contains":
-                    import json as _json
-
                     base_param = f"meta_val_{idx}"
                     tag_conditions = []
                     # Require all values to be present
                     for j, val in enumerate(filt.value):
                         tag_param = f"{base_param}_{j}"
-                        params[tag_param] = _json.dumps([val])
+                        params[tag_param] = json.dumps([val])
                         like_param = f"{base_param}_{j}_like"
                         params[like_param] = f'%"{val}"%'
                         like_param_single = f"{base_param}_{j}_like_single"
@@ -749,7 +756,7 @@ class PostgresSearchRepository(SearchRepositoryBase):
 
                 if filt.op in {"gt", "gte", "lt", "lte", "between"}:
                     compare_expr = (
-                        f"({metadata_expr} #>> '{path}')::double precision"
+                        f"{text_expr}::double precision"
                         if filt.comparison == "numeric"
                         else text_expr
                     )

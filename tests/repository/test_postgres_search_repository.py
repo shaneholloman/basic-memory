@@ -572,3 +572,28 @@ async def test_postgres_dimension_mismatch_triggers_table_recreation(session_mak
         row = result.fetchone()
         assert row is not None
         assert int(row[0]) == 8
+
+
+@pytest.mark.asyncio
+async def test_postgres_note_types_sql_injection_returns_empty(session_maker, test_project):
+    """Postgres JSONB containment with SQL injection payload must not alter query."""
+    repo = PostgresSearchRepository(session_maker, project_id=test_project.id)
+
+    malicious_payloads = [
+        'note"}}\' OR \'1\'=\'1',
+        "note\"; DROP TABLE search_index;--",
+        'note"}} UNION SELECT * FROM entity--',
+    ]
+    for payload in malicious_payloads:
+        results = await repo.search(note_types=[payload])
+        assert results == [], f"Injection payload should not match: {payload}"
+
+
+@pytest.mark.asyncio
+async def test_postgres_metadata_filters_path_parameterized(session_maker, test_project):
+    """Metadata filter paths use jsonb_extract_path_text with parameterized parts."""
+    repo = PostgresSearchRepository(session_maker, project_id=test_project.id)
+
+    # Nested path should work without SQL injection risk
+    results = await repo.search(metadata_filters={"schema.confidence": {"$gt": 0.5}})
+    assert isinstance(results, list)
