@@ -71,8 +71,9 @@ def list_projects(
         cloud_error: Exception | None = None
 
         if cloud:
-            with force_routing(cloud=True):
-                cloud_result = run_with_cleanup(_list_projects(effective_workspace))
+            with console.status("[bold blue]Fetching cloud projects...", spinner="dots"):
+                with force_routing(cloud=True):
+                    cloud_result = run_with_cleanup(_list_projects(effective_workspace))
         elif local:
             with force_routing(local=True):
                 local_result = run_with_cleanup(_list_projects())
@@ -83,8 +84,13 @@ def list_projects(
 
             if _has_cloud_credentials(config):
                 try:
-                    with force_routing(cloud=True):
-                        cloud_result = run_with_cleanup(_list_projects(effective_workspace))
+                    with console.status(
+                        "[bold blue]Fetching cloud projects...", spinner="dots"
+                    ):
+                        with force_routing(cloud=True):
+                            cloud_result = run_with_cleanup(
+                                _list_projects(effective_workspace)
+                            )
                 except Exception as exc:  # pragma: no cover
                     cloud_error = exc
 
@@ -95,7 +101,10 @@ def list_projects(
             try:
                 from basic_memory.mcp.project_context import get_available_workspaces
 
-                workspaces = run_with_cleanup(get_available_workspaces())
+                with console.status(
+                    "[bold blue]Resolving workspace...", spinner="dots"
+                ):
+                    workspaces = run_with_cleanup(get_available_workspaces())
                 matched = next(
                     (ws for ws in workspaces if ws.tenant_id == effective_workspace),
                     None,
