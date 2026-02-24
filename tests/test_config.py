@@ -1112,3 +1112,68 @@ class TestProjectMode:
                 loaded.projects["research"].workspace_id == "11111111-1111-1111-1111-111111111111"
             )
             assert loaded.projects["main"].workspace_id is None
+
+
+class TestLocalSyncPathMigration:
+    """Test migration that promotes local_sync_path into path for cloud projects."""
+
+    def test_migrate_promotes_local_sync_path_to_path(self):
+        """When path is a cloud slug and local_sync_path is set, path becomes local_sync_path."""
+        data = {
+            "projects": {
+                "specs": {
+                    "path": "specs",
+                    "mode": "cloud",
+                    "local_sync_path": "/Users/test/Documents/specs",
+                }
+            }
+        }
+        result = BasicMemoryConfig.migrate_legacy_projects(data)
+        assert result["projects"]["specs"]["path"] == "/Users/test/Documents/specs"
+
+    def test_migrate_does_not_overwrite_absolute_path(self):
+        """When path is already absolute, migration should not change it."""
+        data = {
+            "projects": {
+                "specs": {
+                    "path": "/Users/test/Documents/specs",
+                    "mode": "cloud",
+                    "local_sync_path": "/Users/test/Documents/specs",
+                }
+            }
+        }
+        result = BasicMemoryConfig.migrate_legacy_projects(data)
+        assert result["projects"]["specs"]["path"] == "/Users/test/Documents/specs"
+
+    def test_migrate_skips_entries_without_local_sync_path(self):
+        """Entries without local_sync_path should not be modified."""
+        data = {
+            "projects": {
+                "cloud-only": {
+                    "path": "cloud-only",
+                    "mode": "cloud",
+                }
+            }
+        }
+        result = BasicMemoryConfig.migrate_legacy_projects(data)
+        assert result["projects"]["cloud-only"]["path"] == "cloud-only"
+
+    def test_migrate_handles_mixed_projects(self, tmp_path):
+        """Migration handles a mix of local, cloud-only, and cloud-with-bisync projects."""
+        local_path = str(tmp_path / "local")
+        bisync_path = str(tmp_path / "bisync")
+        data = {
+            "projects": {
+                "local-proj": {"path": local_path, "mode": "local"},
+                "cloud-only": {"path": "cloud-only", "mode": "cloud"},
+                "cloud-bisync": {
+                    "path": "cloud-bisync",
+                    "mode": "cloud",
+                    "local_sync_path": bisync_path,
+                },
+            }
+        }
+        result = BasicMemoryConfig.migrate_legacy_projects(data)
+        assert result["projects"]["local-proj"]["path"] == local_path
+        assert result["projects"]["cloud-only"]["path"] == "cloud-only"
+        assert result["projects"]["cloud-bisync"]["path"] == bisync_path

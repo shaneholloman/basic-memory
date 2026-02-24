@@ -178,20 +178,19 @@ class WatchService:
                 projects = await self.project_repository.get_active_projects()
 
                 # Trigger: project is configured for cloud routing
-                # Why: cloud projects should not be watched/synced by local file watchers
-                # Outcome: watch cycle only observes local-mode projects
-                cloud_projects = [
-                    p.name
-                    for p in projects
-                    if self.app_config.get_project_mode(p.name) == ProjectMode.CLOUD
-                ]
-                if cloud_projects:
-                    projects = [
-                        p
-                        for p in projects
-                        if self.app_config.get_project_mode(p.name) != ProjectMode.CLOUD
-                    ]
-                    logger.debug(f"Skipping cloud-mode projects in watch cycle: {cloud_projects}")
+                # Why: cloud-only projects (no local directory) should not be watched;
+                #       cloud projects with a local bisync copy (absolute path) need watching
+                # Outcome: watch cycle skips cloud projects without a local directory
+                cloud_skip = []
+                for p in projects:
+                    if self.app_config.get_project_mode(p.name) == ProjectMode.CLOUD:
+                        entry = self.app_config.projects.get(p.name)
+                        if entry and Path(entry.path).is_absolute():
+                            continue  # Cloud project with local bisync copy — keep watching
+                        cloud_skip.append(p.name)
+                if cloud_skip:
+                    projects = [p for p in projects if p.name not in cloud_skip]
+                    logger.debug(f"Skipping cloud-mode projects in watch cycle: {cloud_skip}")
 
                 project_paths = [project.path for project in projects]
                 logger.debug(f"Starting watch cycle for directories: {project_paths}")

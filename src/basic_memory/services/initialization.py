@@ -115,15 +115,18 @@ async def initialize_file_sync(
         active_projects = [p for p in active_projects if p.name == constrained_project]
         logger.info(f"Background sync constrained to project: {constrained_project}")
 
-    # Skip cloud-mode projects — their files live on the cloud instance, not locally
-    cloud_projects = [
-        p.name for p in active_projects if app_config.get_project_mode(p.name) == ProjectMode.CLOUD
-    ]
-    if cloud_projects:
-        active_projects = [
-            p for p in active_projects if app_config.get_project_mode(p.name) != ProjectMode.CLOUD
-        ]
-        logger.info(f"Skipping cloud-mode projects for local sync: {cloud_projects}")
+    # Skip cloud-mode projects that have no local directory.
+    # Cloud projects with a local bisync copy (absolute path) are kept for local sync.
+    cloud_skip = []
+    for p in active_projects:
+        if app_config.get_project_mode(p.name) == ProjectMode.CLOUD:
+            entry = app_config.projects.get(p.name)
+            if entry and Path(entry.path).is_absolute():
+                continue  # Cloud project with local bisync copy — keep for local sync
+            cloud_skip.append(p.name)
+    if cloud_skip:
+        active_projects = [p for p in active_projects if p.name not in cloud_skip]
+        logger.info(f"Skipping cloud-mode projects for local sync: {cloud_skip}")
 
     # Start sync for all projects as background tasks (non-blocking)
     async def sync_project_background(project: Project):

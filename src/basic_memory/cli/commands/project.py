@@ -285,9 +285,10 @@ def add_project(
             local_dir = Path(local_sync_path)
             local_dir.mkdir(parents=True, exist_ok=True)
 
-            # Update project entry with sync path
+            # Update project entry — path is always the local directory
             entry = config.projects.get(name)
             if entry:
+                entry.path = local_sync_path
                 entry.local_sync_path = local_sync_path
             else:
                 # Project may not be in local config yet (cloud-only add)

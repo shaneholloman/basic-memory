@@ -144,23 +144,19 @@ async def test_run_reloads_projects_each_cycle(monkeypatch, tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_run_filters_cloud_projects_each_cycle(monkeypatch, tmp_path):
+async def test_run_filters_cloud_only_projects_each_cycle(monkeypatch, tmp_path):
+    """Cloud-only projects (slug path, no local directory) are filtered out."""
     config = BasicMemoryConfig(
         watch_project_reload_interval=1,
         projects={
             "local-project": {"path": str(tmp_path / "local"), "mode": "local"},
-            "cloud-project": {"path": str(tmp_path / "cloud"), "mode": "cloud"},
+            "cloud-only": {"path": "cloud-slug", "mode": "cloud"},
         },
     )
     repo = _Repo(
         projects_return=[
             Project(id=1, name="local-project", path=str(tmp_path / "local"), permalink="local"),
-            Project(
-                id=2,
-                name="cloud-project",
-                path=str(tmp_path / "cloud"),
-                permalink="cloud",
-            ),
+            Project(id=2, name="cloud-only", path="cloud-slug", permalink="cloud-only"),
         ]
     )
     watch_service = WatchService(config, repo, quiet=True)
@@ -181,6 +177,47 @@ async def test_run_filters_cloud_projects_each_cycle(monkeypatch, tmp_path):
     await watch_service.run()
 
     assert seen_project_names == [["local-project"]]
+
+
+@pytest.mark.asyncio
+async def test_run_keeps_cloud_projects_with_local_bisync(monkeypatch, tmp_path):
+    """Cloud projects with an absolute path (local bisync copy) are kept for watching."""
+    config = BasicMemoryConfig(
+        watch_project_reload_interval=1,
+        projects={
+            "local-project": {"path": str(tmp_path / "local"), "mode": "local"},
+            "cloud-bisync": {"path": str(tmp_path / "cloud"), "mode": "cloud"},
+        },
+    )
+    repo = _Repo(
+        projects_return=[
+            Project(id=1, name="local-project", path=str(tmp_path / "local"), permalink="local"),
+            Project(
+                id=2,
+                name="cloud-bisync",
+                path=str(tmp_path / "cloud"),
+                permalink="cloud-bisync",
+            ),
+        ]
+    )
+    watch_service = WatchService(config, repo, quiet=True)
+
+    seen_project_names: list[list[str]] = []
+
+    async def watch_cycle_stub(projects, stop_event):
+        seen_project_names.append([p.name for p in projects])
+        watch_service.state.running = False
+        stop_event.set()
+
+    async def fake_write_status():
+        return None
+
+    monkeypatch.setattr(watch_service, "_watch_projects_cycle", watch_cycle_stub)
+    monkeypatch.setattr(watch_service, "write_status", fake_write_status)
+
+    await watch_service.run()
+
+    assert seen_project_names == [["local-project", "cloud-bisync"]]
 
 
 @pytest.mark.asyncio

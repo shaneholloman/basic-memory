@@ -5,6 +5,7 @@ project instances. These were previously in project.py but belong here since
 they are cloud-specific operations.
 """
 
+import os
 from datetime import datetime
 
 import typer
@@ -69,10 +70,11 @@ def _get_sync_project(
     Returns (sync_project, local_sync_path). Exits if no local_sync_path configured.
     """
     sync_entry = config.projects.get(name)
-    local_sync_path = sync_entry.local_sync_path if sync_entry else None
+    # Support both new (path) and legacy (local_sync_path) configs
+    local_sync_path = (sync_entry.local_sync_path or sync_entry.path) if sync_entry else None
 
-    if not local_sync_path:
-        console.print(f"[red]Error: Project '{name}' has no local_sync_path configured[/red]")
+    if not local_sync_path or not os.path.isabs(local_sync_path):
+        console.print(f"[red]Error: Project '{name}' has no local sync path configured[/red]")
         console.print(f"\nConfigure sync with: bm cloud sync-setup {name} ~/path/to/local")
         raise typer.Exit(1)
 
@@ -334,9 +336,10 @@ def setup_project_sync(
         resolved_path = Path(os.path.abspath(os.path.expanduser(local_path)))
         resolved_path.mkdir(parents=True, exist_ok=True)
 
-        # Update project entry with sync path
+        # Update project entry with sync path — path is always the local directory
         entry = config.projects.get(name)
         if entry:
+            entry.path = resolved_path.as_posix()
             entry.local_sync_path = resolved_path.as_posix()
             entry.bisync_initialized = False
             entry.last_sync = None
@@ -346,6 +349,18 @@ def setup_project_sync(
                 local_sync_path=resolved_path.as_posix(),
             )
         config_manager.save_config(config)
+
+        # Create the project in the local DB so the MCP server can immediately use it
+        async def _create_local_project():
+            async with get_client() as client:
+                data = {"name": name, "path": resolved_path.as_posix(), "set_default": False}
+                return await ProjectClient(client).create_project(data)
+
+        with force_routing(local=True):
+            try:
+                run_with_cleanup(_create_local_project())
+            except Exception:
+                pass  # Project may already exist locally; reconcile on next startup
 
         console.print(f"[green]Sync configured for project '{name}'[/green]")
         console.print(f"\nLocal sync path: {resolved_path}")

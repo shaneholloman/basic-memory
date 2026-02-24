@@ -403,6 +403,18 @@ class BasicMemoryConfig(BaseSettings):
             data.pop("project_modes", None)
             data.pop("cloud_projects", None)
 
+        # --- Promote local_sync_path into path for cloud projects with slug paths ---
+        # Trigger: project entry has local_sync_path set but path is a cloud slug (not absolute)
+        # Why: path must always be the local filesystem path; the cloud remote is derivable
+        # Outcome: path becomes the local directory, local_sync_path kept for backwards compat
+        projects = data.get("projects", {})
+        for name, entry in projects.items():
+            if isinstance(entry, dict):
+                lsp = entry.get("local_sync_path")
+                path = entry.get("path", "")
+                if lsp and not os.path.isabs(path):
+                    entry["path"] = lsp
+
         return data
 
     @property
@@ -564,6 +576,9 @@ class BasicMemoryConfig(BaseSettings):
 
         for name, entry in self.projects.items():
             path = Path(entry.path)
+            # Skip cloud-only projects whose path is a slug, not a local directory
+            if not path.is_absolute():
+                continue
             if not path.exists():
                 try:
                     path.mkdir(parents=True)
@@ -645,6 +660,17 @@ class ConfigManager:
                     if isinstance(first_val, str):
                         needs_resave = True
 
+                # Check if any project has local_sync_path set but path is a cloud slug
+                # (will be migrated by migrate_legacy_projects validator)
+                if not needs_resave:
+                    for entry_data in projects_raw.values():
+                        if isinstance(entry_data, dict):
+                            lsp = entry_data.get("local_sync_path")
+                            p = entry_data.get("path", "")
+                            if lsp and not os.path.isabs(p):
+                                needs_resave = True
+                                break
+
                 # First, create config from environment variables (Pydantic will read them)
                 # Then overlay with file data for fields that aren't set via env vars
                 # This ensures env vars take precedence
@@ -673,9 +699,20 @@ class ConfigManager:
                     save_basic_memory_config(self.config_file, _CONFIG_CACHE)
 
                 return _CONFIG_CACHE
+            except json.JSONDecodeError as e:  # pragma: no cover
+                logger.error(f"Invalid JSON in config file {self.config_file}: {e}")
+                raise SystemExit(
+                    f"Error: config file is not valid JSON: {self.config_file}\n"
+                    f"  {e}\n"
+                    f"Fix or delete the file and re-run."
+                )
             except Exception as e:  # pragma: no cover
-                logger.exception(f"Failed to load config: {e}")
-                raise e
+                logger.error(f"Failed to load config from {self.config_file}: {e}")
+                raise SystemExit(
+                    f"Error: failed to load config from {self.config_file}\n"
+                    f"  {e}\n"
+                    f"Fix or delete the file and re-run."
+                )
         else:
             config = BasicMemoryConfig()
             self.save_config(config)
