@@ -484,6 +484,31 @@ See the [Documentation](https://docs.basicmemory.com) for more info, including:
 - [Managing multiple Projects](https://docs.basicmemory.com/guides/cli-reference/#project)
 - [Importing data from OpenAI/Claude Projects](https://docs.basicmemory.com/guides/cli-reference/#import)
 
+## Telemetry
+
+Basic Memory collects anonymous, minimal usage events to understand how the CLI-to-cloud conversion funnel performs. This helps us prioritize features and improve the product.
+
+**What we collect:**
+- Cloud promo impressions (when the promo banner is shown)
+- Cloud login attempts and outcomes
+- Promo opt-out events
+
+**What we do NOT collect:**
+- No file contents, note titles, or knowledge base data
+- No personally identifiable information (PII)
+- No IP address tracking or fingerprinting
+- No per-command or per-tool-call tracking
+
+Events are sent to our [Umami Cloud](https://umami.is) instance, an open-source, privacy-focused analytics platform. Events are fire-and-forget on a background thread — analytics never blocks or slows the CLI.
+
+**Opt out** by setting the environment variable:
+
+```bash
+export BASIC_MEMORY_NO_PROMOS=1
+```
+
+This disables both promo messages and all telemetry events.
+
 ## Logging
 
 Basic Memory uses [Loguru](https://github.com/Delgan/loguru) for logging. The logging behavior varies by entry point:
@@ -506,6 +531,7 @@ Basic Memory uses [Loguru](https://github.com/Delgan/loguru) for logging. The lo
 | `BASIC_MEMORY_FORCE_CLOUD` | `false` | When `true`, forces cloud API routing |
 | `BASIC_MEMORY_EXPLICIT_ROUTING` | `false` | When `true`, marks route selection as explicit (`--local`/`--cloud`) |
 | `BASIC_MEMORY_ENV` | `dev` | Set to `test` for test mode (stderr only) |
+| `BASIC_MEMORY_NO_PROMOS` | `false` | When `true`, disables cloud promo messages and telemetry |
 
 ### Examples
 
