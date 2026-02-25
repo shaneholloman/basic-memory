@@ -438,12 +438,17 @@ class SQLiteSearchRepository(SearchRepositoryBase):
         """Load sqlite-vec extension for the session."""
         await self._ensure_sqlite_vec_loaded(session)
 
+    # sqlite-vec hard limit for knn k parameter
+    SQLITE_VEC_MAX_K = 4096
+
     async def _run_vector_query(
         self,
         session: AsyncSession,
         query_embedding: list[float],
         candidate_limit: int,
     ) -> list[dict]:
+        # Constraint: sqlite-vec enforces k <= 4096 for knn queries
+        vector_k = min(candidate_limit, self.SQLITE_VEC_MAX_K)
         query_embedding_json = json.dumps(query_embedding)
         vector_result = await session.execute(
             text(
@@ -458,12 +463,13 @@ class SQLiteSearchRepository(SearchRepositoryBase):
                 "JOIN search_vector_chunks c ON c.id = vector_matches.rowid "
                 "WHERE c.project_id = :project_id "
                 "ORDER BY best_distance ASC "
-                "LIMIT :vector_k"
+                "LIMIT :candidate_limit"
             ),
             {
                 "query_embedding": query_embedding_json,
                 "project_id": self.project_id,
-                "vector_k": candidate_limit,
+                "vector_k": vector_k,
+                "candidate_limit": candidate_limit,
             },
         )
         return [dict(row) for row in vector_result.mappings().all()]

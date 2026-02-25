@@ -1,6 +1,8 @@
 """SQLite sqlite-vec search repository tests."""
 
+import json
 from datetime import datetime, timezone
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from sqlalchemy import text
@@ -264,3 +266,52 @@ async def test_sqlite_hybrid_search_combines_fts_and_vector(search_repository):
 
     assert results
     assert any(result.permalink == "specs/search-index" for result in results)
+
+
+@pytest.mark.asyncio
+async def test_run_vector_query_caps_k_at_sqlite_vec_limit(search_repository):
+    """_run_vector_query must cap the knn k param at SQLITE_VEC_MAX_K (4096).
+
+    sqlite-vec raises OperationalError when k > 4096. The candidate_limit
+    passed from the base class can exceed this for large projects, so
+    _run_vector_query clamps k while keeping the outer LIMIT unclamped.
+    """
+    if not isinstance(search_repository, SQLiteSearchRepository):
+        pytest.skip("sqlite-vec k limit is SQLite-specific.")
+
+    _enable_semantic(search_repository)
+    await search_repository.init_search_index()
+
+    # Track the parameters passed to session.execute
+    captured_params: list[dict] = []
+    original_execute = None
+
+    async def capturing_execute(stmt, params=None):
+        if params and "vector_k" in params:
+            captured_params.append(dict(params))
+        # Return empty result set
+        mock_result = MagicMock()
+        mock_result.mappings.return_value.all.return_value = []
+        return mock_result
+
+    async with db.scoped_session(search_repository.session_maker) as session:
+        await search_repository._prepare_vector_session(session)
+        original_execute = session.execute
+        session.execute = capturing_execute
+
+        query_embedding = [0.1] * search_repository._vector_dimensions
+
+        # candidate_limit exceeds sqlite-vec limit
+        await search_repository._run_vector_query(session, query_embedding, 10000)
+
+        assert len(captured_params) == 1
+        assert captured_params[0]["vector_k"] == SQLiteSearchRepository.SQLITE_VEC_MAX_K
+        assert captured_params[0]["candidate_limit"] == 10000
+
+        # candidate_limit within limit should pass through unchanged
+        captured_params.clear()
+        await search_repository._run_vector_query(session, query_embedding, 500)
+
+        assert len(captured_params) == 1
+        assert captured_params[0]["vector_k"] == 500
+        assert captured_params[0]["candidate_limit"] == 500
