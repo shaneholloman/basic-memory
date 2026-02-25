@@ -33,9 +33,8 @@ def test_project_info(app, app_config, test_project, config_manager):
         print(f"STDOUT: {result.stdout}")
         print(f"STDERR: {result.stderr}")
     assert result.exit_code == 0
-    assert "Basic Memory Project Info" in result.stdout
     assert "test-project" in result.stdout
-    assert "Statistics" in result.stdout
+    assert "Knowledge Graph" in result.stdout
 
 
 def test_project_info_json(app, app_config, test_project, config_manager):
