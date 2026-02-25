@@ -6,10 +6,10 @@ no cookies. Respects the same opt-out mechanisms as promo messaging.
 
 Events are fire-and-forget — analytics never blocks or breaks the CLI.
 
-Setup:
-    Set these environment variables (or leave unset to disable):
-        BASIC_MEMORY_UMAMI_HOST     — Umami instance URL (e.g. https://analytics.basicmemory.com)
-        BASIC_MEMORY_UMAMI_SITE_ID  — Website ID from Umami dashboard
+Defaults point to the Basic Memory Umami Cloud instance. Override via:
+    BASIC_MEMORY_UMAMI_HOST     — Custom Umami instance URL
+    BASIC_MEMORY_UMAMI_SITE_ID  — Custom Website ID
+Opt out entirely with BASIC_MEMORY_NO_PROMOS=1.
 """
 
 import json
@@ -22,16 +22,19 @@ import basic_memory
 
 
 # ---------------------------------------------------------------------------
-# Configuration — read from environment so nothing is hard-coded in source
+# Configuration — defaults baked in, overridable via environment
 # ---------------------------------------------------------------------------
+
+_DEFAULT_UMAMI_HOST = "https://cloud.umami.is"
+_DEFAULT_UMAMI_SITE_ID = "f6479898-ebaf-4e60-bce2-6dc60a3f6c5c"
 
 
 def _umami_host() -> Optional[str]:
-    return os.getenv("BASIC_MEMORY_UMAMI_HOST", "").strip() or None
+    return os.getenv("BASIC_MEMORY_UMAMI_HOST", "").strip() or _DEFAULT_UMAMI_HOST
 
 
 def _umami_site_id() -> Optional[str]:
-    return os.getenv("BASIC_MEMORY_UMAMI_SITE_ID", "").strip() or None
+    return os.getenv("BASIC_MEMORY_UMAMI_SITE_ID", "").strip() or _DEFAULT_UMAMI_SITE_ID
 
 
 def _analytics_disabled() -> bool:

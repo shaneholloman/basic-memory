@@ -9,6 +9,8 @@ from basic_memory.cli.analytics import (
     track,
     _analytics_disabled,
     _is_configured,
+    _umami_host,
+    _umami_site_id,
     EVENT_PROMO_SHOWN,
     EVENT_CLOUD_LOGIN_STARTED,
     EVENT_CLOUD_LOGIN_SUCCESS,
@@ -37,20 +39,17 @@ class TestIsConfigured:
         monkeypatch.setenv("BASIC_MEMORY_UMAMI_SITE_ID", "abc-123")
         assert _is_configured() is True
 
-    def test_not_configured_when_host_missing(self, monkeypatch):
+    def test_configured_by_default(self, monkeypatch):
+        """Defaults are baked in — always configured unless explicitly emptied."""
         monkeypatch.delenv("BASIC_MEMORY_UMAMI_HOST", raising=False)
-        monkeypatch.setenv("BASIC_MEMORY_UMAMI_SITE_ID", "abc-123")
-        assert _is_configured() is False
-
-    def test_not_configured_when_site_id_missing(self, monkeypatch):
-        monkeypatch.setenv("BASIC_MEMORY_UMAMI_HOST", "https://analytics.example.com")
         monkeypatch.delenv("BASIC_MEMORY_UMAMI_SITE_ID", raising=False)
-        assert _is_configured() is False
+        assert _is_configured() is True
 
-    def test_not_configured_when_empty_strings(self, monkeypatch):
-        monkeypatch.setenv("BASIC_MEMORY_UMAMI_HOST", "")
-        monkeypatch.setenv("BASIC_MEMORY_UMAMI_SITE_ID", "")
-        assert _is_configured() is False
+    def test_env_override_takes_precedence(self, monkeypatch):
+        monkeypatch.setenv("BASIC_MEMORY_UMAMI_HOST", "https://custom.example.com")
+        monkeypatch.setenv("BASIC_MEMORY_UMAMI_SITE_ID", "custom-id")
+        assert _umami_host() == "https://custom.example.com"
+        assert _umami_site_id() == "custom-id"
 
 
 class TestTrack:
@@ -60,13 +59,15 @@ class TestTrack:
             track("test-event")
             mock_thread.assert_not_called()
 
-    def test_no_op_when_not_configured(self, monkeypatch):
+    def test_sends_when_using_defaults(self, monkeypatch):
+        """With baked-in defaults, track() fires even without env vars."""
         monkeypatch.delenv("BASIC_MEMORY_NO_PROMOS", raising=False)
         monkeypatch.delenv("BASIC_MEMORY_UMAMI_HOST", raising=False)
         monkeypatch.delenv("BASIC_MEMORY_UMAMI_SITE_ID", raising=False)
         with patch("basic_memory.cli.analytics.threading.Thread") as mock_thread:
+            mock_thread.return_value = MagicMock()
             track("test-event")
-            mock_thread.assert_not_called()
+            mock_thread.assert_called_once()
 
     def test_sends_event_when_configured(self, monkeypatch):
         monkeypatch.delenv("BASIC_MEMORY_NO_PROMOS", raising=False)
