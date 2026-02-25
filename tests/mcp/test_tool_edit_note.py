@@ -415,6 +415,39 @@ async def test_edit_note_find_replace_empty_find_text(client, test_project):
 
 
 @pytest.mark.asyncio
+async def test_edit_note_append_with_null_optional_fields(client, test_project):
+    """Regression test: MCP clients may send explicit null for unused optional fields.
+
+    When an MCP client sends find_text=None, section=None, expected_replacements=None
+    for an append operation, the tool should accept them without validation errors.
+    """
+    # Create initial note
+    await write_note(
+        project=test_project.name,
+        title="Null Fields Test",
+        directory="test",
+        content="# Null Fields Test\nOriginal content.",
+    )
+
+    # Call edit_note with explicit None for all optional fields (simulates MCP null)
+    result = await edit_note(
+        project=test_project.name,
+        identifier="test/null-fields-test",
+        operation="append",
+        content="\nAppended content.",
+        find_text=None,
+        section=None,
+        expected_replacements=None,
+    )
+
+    assert isinstance(result, str)
+    assert "Edited note (append)" in result
+    assert f"project: {test_project.name}" in result
+    assert "file_path: test/Null Fields Test.md" in result
+    assert f"[Session: Using project '{test_project.name}']" in result
+
+
+@pytest.mark.asyncio
 async def test_edit_note_preserves_permalink_when_frontmatter_missing(client, test_project):
     """Test that editing a note preserves the permalink when frontmatter doesn't contain one.
 
