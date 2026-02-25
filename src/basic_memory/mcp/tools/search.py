@@ -257,7 +257,7 @@ Error searching for '{query}': {error_message}
     annotations={"readOnlyHint": True, "openWorldHint": False},
 )
 async def search_notes(
-    query: str,
+    query: Optional[str] = None,
     project: Optional[str] = None,
     workspace: Optional[str] = None,
     page: int = 1,
@@ -333,8 +333,10 @@ async def search_notes(
     - Nested keys use dot notation (e.g., `"schema.confidence"`).
 
     ### Filter-only Searches
-    You can pass an empty query string when only using structured filters:
-    - `search_notes("my-project", "", metadata_filters={"type": "spec"})`
+    Omit `query` (or pass None) when only using structured filters:
+    - `search_notes(metadata_filters={"type": "spec"}, project="my-project")`
+    - `search_notes(tags=["security"], project="my-project")`
+    - `search_notes(status="draft", project="my-project")`
 
     ### Convenience Filters
     `tags` and `status` are shorthand for metadata_filters. If the same key exists in
@@ -347,7 +349,8 @@ async def search_notes(
     - `search_notes("archive", "docs/2024-*", search_type="permalink")` - Year-based permalink search
 
     Args:
-        query: The search query string (supports boolean operators, phrases, patterns)
+        query: Optional search query string (supports boolean operators, phrases, patterns).
+              Omit or pass None for filter-only searches using metadata_filters, tags, or status.
         project: Project name to search in. Optional - server will resolve using hierarchy.
                 If unknown, use list_memory_projects() to discover available projects.
         page: The page number of results to return (default 1)
@@ -436,47 +439,55 @@ async def search_notes(
     entity_types = entity_types or []
 
     # Detect project from memory URL prefix before routing
-    if project is None:
+    if project is None and query is not None:
         detected = detect_project_from_url_prefix(query, ConfigManager().config)
         if detected:
             project = detected
 
     async with get_project_client(project, workspace, context) as (client, active_project):
         # Handle memory:// URLs by resolving to permalink search
-        _, resolved_query, is_memory_url = await resolve_project_and_path(
-            client, query, project, context
-        )
+        is_memory_url = False
+        if query is not None:
+            _, resolved_query, is_memory_url = await resolve_project_and_path(
+                client, query, project, context
+            )
+            if is_memory_url:
+                query = resolved_query
         effective_search_type = search_type or _default_search_type()
         if is_memory_url:
-            query = resolved_query
             effective_search_type = "permalink"
 
         try:
             # Create a SearchQuery object based on the parameters
             search_query = SearchQuery()
 
-            # Map search_type to the appropriate query field and retrieval mode
-            valid_search_types = {"text", "title", "permalink", "vector", "semantic", "hybrid"}
-            if effective_search_type == "text":
-                search_query.text = query
-                search_query.retrieval_mode = SearchRetrievalMode.FTS
-            elif effective_search_type in ("vector", "semantic"):
-                search_query.text = query
-                search_query.retrieval_mode = SearchRetrievalMode.VECTOR
-            elif effective_search_type == "hybrid":
-                search_query.text = query
-                search_query.retrieval_mode = SearchRetrievalMode.HYBRID
-            elif effective_search_type == "title":
-                search_query.title = query
-            elif effective_search_type == "permalink" and "*" in query:
-                search_query.permalink_match = query
-            elif effective_search_type == "permalink":
-                search_query.permalink = query
-            else:
-                raise ValueError(
-                    f"Invalid search_type '{effective_search_type}'. "
-                    f"Valid options: {', '.join(sorted(valid_search_types))}"
-                )
+            # Only map search_type to query fields when there is an actual query string.
+            # When query is None/empty, skip the search mode block — filters-only path.
+            effective_query = (query or "").strip()
+            if effective_query:
+                valid_search_types = {
+                    "text", "title", "permalink", "vector", "semantic", "hybrid",
+                }
+                if effective_search_type == "text":
+                    search_query.text = effective_query
+                    search_query.retrieval_mode = SearchRetrievalMode.FTS
+                elif effective_search_type in ("vector", "semantic"):
+                    search_query.text = effective_query
+                    search_query.retrieval_mode = SearchRetrievalMode.VECTOR
+                elif effective_search_type == "hybrid":
+                    search_query.text = effective_query
+                    search_query.retrieval_mode = SearchRetrievalMode.HYBRID
+                elif effective_search_type == "title":
+                    search_query.title = effective_query
+                elif effective_search_type == "permalink" and "*" in effective_query:
+                    search_query.permalink_match = effective_query
+                elif effective_search_type == "permalink":
+                    search_query.permalink = effective_query
+                else:
+                    raise ValueError(
+                        f"Invalid search_type '{effective_search_type}'. "
+                        f"Valid options: {', '.join(sorted(valid_search_types))}"
+                    )
 
             # Add optional filters if provided (empty lists are treated as no filter)
             if entity_types:
@@ -493,6 +504,14 @@ async def search_notes(
                 search_query.status = status
             if min_similarity is not None:
                 search_query.min_similarity = min_similarity
+
+            # Reject searches with no criteria at all
+            if search_query.no_criteria():
+                return (
+                    "# No Search Criteria\n\n"
+                    "Please provide at least one of: `query`, `metadata_filters`, "
+                    "`tags`, `status`, `note_types`, `entity_types`, or `after_date`."
+                )
 
             logger.info(f"Searching for {search_query} in project {active_project.name}")
             # Import here to avoid circular import (tools → clients → utils → tools)
@@ -520,88 +539,10 @@ async def search_notes(
             return result
 
         except Exception as e:
-            logger.error(f"Search failed for query '{query}': {e}, project: {active_project.name}")
+            logger.error(
+                f"Search failed for query '{query or ''}': {e}, project: {active_project.name}"
+            )
             # Return formatted error message as string for better user experience
             return _format_search_error_response(
-                active_project.name, str(e), query, effective_search_type
-            )
-
-
-@mcp.tool(
-    description="Search entities by structured frontmatter metadata.",
-    annotations={"readOnlyHint": True, "openWorldHint": False},
-)
-async def search_by_metadata(
-    filters: Dict[str, Any],
-    project: Optional[str] = None,
-    workspace: Optional[str] = None,
-    limit: int = 20,
-    offset: int = 0,
-    context: Context | None = None,
-) -> SearchResponse | str:
-    """Search entities by structured frontmatter metadata.
-
-    Args:
-        filters: Dictionary of metadata filters (e.g., {"status": "in-progress"})
-        project: Project name to search in. Optional - server will resolve using hierarchy.
-        limit: Maximum number of results to return
-        offset: Number of results to skip (for pagination)
-        context: Optional FastMCP context for performance caching.
-
-    Returns:
-        SearchResponse with results, or helpful error guidance if search fails
-    """
-    if limit <= 0:
-        return "# Error\n\n`limit` must be greater than 0."
-
-    # Build a structured-only search query
-    search_query = SearchQuery()
-    search_query.metadata_filters = filters
-    search_query.entity_types = [SearchItemType.ENTITY]
-
-    # Convert offset/limit to page/page_size (API uses paging)
-    page_size = limit
-    page = (offset // limit) + 1
-    offset_within_page = offset % limit
-
-    async with get_project_client(project, workspace, context) as (client, active_project):
-        logger.info(
-            f"Structured search in project {active_project.name} filters={filters} limit={limit} offset={offset}"
-        )
-
-        try:
-            from basic_memory.mcp.clients import SearchClient
-
-            search_client = SearchClient(client, active_project.external_id)
-            result = await search_client.search(
-                search_query.model_dump(),
-                page=page,
-                page_size=page_size,
-            )
-
-            # Apply offset within page, fetch next page if needed
-            if offset_within_page:
-                remaining = result.results[offset_within_page:]
-                if len(remaining) < limit:
-                    next_page = page + 1
-                    extra = await search_client.search(
-                        search_query.model_dump(),
-                        page=next_page,
-                        page_size=page_size,
-                    )
-                    remaining.extend(extra.results[: max(0, limit - len(remaining))])
-                result = SearchResponse(
-                    results=remaining[:limit],
-                    current_page=page,
-                    page_size=page_size,
-                )
-
-            return result
-
-        except Exception as e:
-            logger.error(
-                f"Metadata search failed for filters '{filters}': {e}, project: {active_project.name}"
-            )
-            return _format_search_error_response(
-                active_project.name, str(e), str(filters), "metadata"
+                active_project.name, str(e), query or "", effective_search_type
             )

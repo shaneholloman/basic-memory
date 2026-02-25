@@ -73,7 +73,6 @@ EXPECTED_TOOL_SIGNATURES: dict[str, list[str]] = {
     "schema_infer": ["note_type", "threshold", "project", "workspace", "output_format"],
     "schema_validate": ["note_type", "identifier", "project", "workspace", "output_format"],
     "search": ["query"],
-    "search_by_metadata": ["filters", "project", "workspace", "limit", "offset"],
     "search_notes": [
         "query",
         "project",
@@ -126,7 +125,6 @@ TOOL_FUNCTIONS: dict[str, object] = {
     "schema_infer": tools.schema_infer,
     "schema_validate": tools.schema_validate,
     "search": tools.search,
-    "search_by_metadata": tools.search_by_metadata,
     "search_notes": tools.search_notes,
     "view_note": tools.view_note,
     "write_note": tools.write_note,

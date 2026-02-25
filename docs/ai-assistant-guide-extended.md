@@ -1060,9 +1060,9 @@ results = await search_notes(
     project="main"
 )
 
-# Metadata-only search
-results = await search_by_metadata(
-    filters={"type": "spec", "status": "in-progress"},
+# Metadata-only search (no query needed)
+results = await search_notes(
+    metadata_filters={"type": "spec", "status": "in-progress"},
     project="main"
 )
 ```
@@ -2915,18 +2915,11 @@ results = await search_notes(
 )
 ```
 
-**search_by_metadata(filters, limit, offset, project)**
-- Metadata-only search using structured frontmatter
-- Parameters:
-  - `filters` (required): Dict of field -> value (supports $in, $gt/$gte/$lt/$lte, $between)
-  - `limit` (optional): Max results (default: 20)
-  - `offset` (optional): Pagination offset (default: 0)
-  - `project` (required unless default_project_mode): Target project
-- Returns: Matching entities
-- Example:
+**Metadata-only search (via search_notes)**
+- Use `search_notes` with `metadata_filters` and no `query` for metadata-only searches:
 ```python
-results = await search_by_metadata(
-    filters={"type": "spec", "status": "in-progress"},
+results = await search_notes(
+    metadata_filters={"type": "spec", "status": "in-progress"},
     project="main"
 )
 ```

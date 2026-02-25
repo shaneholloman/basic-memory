@@ -18,7 +18,7 @@ from basic_memory.mcp.tools.view_note import view_note
 from basic_memory.mcp.tools.write_note import write_note
 from basic_memory.mcp.tools.cloud_info import cloud_info
 from basic_memory.mcp.tools.release_notes import release_notes
-from basic_memory.mcp.tools.search import search_notes, search_by_metadata
+from basic_memory.mcp.tools.search import search_notes
 from basic_memory.mcp.tools.canvas import canvas
 from basic_memory.mcp.tools.list_directory import list_directory
 from basic_memory.mcp.tools.edit_note import edit_note
@@ -58,7 +58,6 @@ __all__ = [
     "schema_infer",
     "schema_validate",
     "search",
-    "search_by_metadata",
     "search_notes",
     # "search_notes_ui",
     "view_note",

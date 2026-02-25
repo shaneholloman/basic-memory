@@ -2,14 +2,9 @@
 
 Basic Memory automatically indexes custom frontmatter fields so you can query them with structured filters. Any YAML key in a note's frontmatter beyond the standard set (`title`, `type`, `tags`, `permalink`, `schema`) is stored as `entity_metadata` and becomes searchable.
 
-## Two Ways to Query
+## Querying with `search_notes`
 
-| Tool | Use When |
-|------|----------|
-| `search_by_metadata` | You only need metadata filters (no text query) |
-| `search_notes` | You want to combine a text query with metadata filters |
-
-Both tools accept the same filter syntax.
+`search_notes` is the single search tool for all queries — text, metadata filters, or both. The `query` parameter is optional, so you can use metadata filters alone without passing an empty string.
 
 ## Filter Syntax
 
@@ -88,45 +83,16 @@ This queries the `version` key inside a `schema` object in frontmatter.
 - `$in` and array-contains require non-empty lists.
 - `$between` requires exactly two values `[min, max]`.
 
-## MCP Tools
+## MCP Tool — `search_notes`
 
-### `search_by_metadata` — metadata-only search
-
-Searches entities by structured frontmatter metadata without a text query. Results are scoped to entity-level items.
-
-**Parameters:**
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `filters` | dict | Yes | Metadata filter dictionary (see syntax above) |
-| `project` | string | No | Project to search in (uses default if omitted) |
-| `limit` | int | No | Max results (default 20) |
-| `offset` | int | No | Skip N results for pagination (default 0) |
-
-**Example:**
-
-```python
-# Find all notes with status "in-progress"
-await search_by_metadata({"status": "in-progress"})
-
-# Find high-priority specs in the research project
-await search_by_metadata(
-    {"type": "spec", "priority": {"$in": ["high", "critical"]}},
-    project="research",
-    limit=10,
-)
-```
-
-### `search_notes` with metadata — combined text + metadata
-
-The `search_notes` tool accepts `metadata_filters`, `tags`, and `status` parameters alongside the text `query`. This lets you combine full-text search with structured filtering.
+`search_notes` is the single search tool for text queries, metadata filters, or both. The `query` parameter is optional.
 
 **Relevant parameters:**
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `query` | string | Text search query (can be empty when using only filters) |
-| `metadata_filters` | dict | Structured filter dict (same syntax as `search_by_metadata`) |
+| `query` | string (optional) | Text search query. Omit for filter-only searches. |
+| `metadata_filters` | dict | Structured filter dict (see syntax above) |
 | `tags` | list[str] | Convenience shorthand — merged into `metadata_filters["tags"]` |
 | `status` | string | Convenience shorthand — merged into `metadata_filters["status"]` |
 
@@ -138,8 +104,8 @@ The `search_notes` tool accepts `metadata_filters`, `tags`, and `status` paramet
 # Text search filtered by metadata
 await search_notes("authentication", metadata_filters={"status": "draft"})
 
-# Filter-only search (empty query)
-await search_notes("", metadata_filters={"type": "spec"})
+# Filter-only search (no query needed)
+await search_notes(metadata_filters={"type": "spec"})
 
 # Combine text, tags shortcut, and metadata
 await search_notes(
@@ -150,7 +116,7 @@ await search_notes(
 
 # Convenience shortcuts
 await search_notes("planning", status="active")
-await search_notes("", tags=["tier1", "alpha"])
+await search_notes(tags=["tier1", "alpha"])
 ```
 
 ## Tag Search Shortcuts
@@ -260,19 +226,19 @@ confidence: 0.6
 
 ```python
 # Find all in-progress specs
-await search_by_metadata({"status": "in-progress", "type": "spec"})
+await search_notes(metadata_filters={"status": "in-progress", "type": "spec"})
 # → Auth Design
 
 # Find high-confidence specs
-await search_by_metadata({"confidence": {"$gt": 0.7}})
+await search_notes(metadata_filters={"confidence": {"$gt": 0.7}})
 # → Auth Design (confidence: 0.85)
 
 # Find specs with priority high or medium
-await search_by_metadata({"priority": {"$in": ["high", "medium"]}})
+await search_notes(metadata_filters={"priority": {"$in": ["high", "medium"]}})
 # → Auth Design, Search Redesign
 
 # Find specs in a confidence range
-await search_by_metadata({"confidence": {"$between": [0.5, 0.9]}})
+await search_notes(metadata_filters={"confidence": {"$between": [0.5, 0.9]}})
 # → Auth Design (0.85), Search Redesign (0.6)
 
 # Find notes tagged with security

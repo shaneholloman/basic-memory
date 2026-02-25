@@ -6,7 +6,7 @@ from datetime import datetime, timedelta
 
 from basic_memory.mcp.tools import write_note
 from basic_memory.mcp.tools.search import search_notes, _format_search_error_response
-from basic_memory.schemas.search import SearchItemType, SearchResponse
+from basic_memory.schemas.search import SearchResponse
 
 
 @pytest.mark.asyncio
@@ -526,14 +526,12 @@ async def test_search_notes_passes_metadata_filters(monkeypatch):
     assert captured_payload["status"] == "published"
 
 
-# --- Tests for search_by_metadata tool (lines 505-556) ---------------------
+# --- Tests for filter-only search (query=None) --------------------------------
 
 
 @pytest.mark.asyncio
-async def test_search_by_metadata_basic(monkeypatch):
-    """search_by_metadata calls SearchClient with correct structured query."""
-    from basic_memory.mcp.tools.search import search_by_metadata
-
+async def test_search_notes_filter_only_metadata(monkeypatch):
+    """search_notes with metadata_filters only (no query) sends correct payload."""
     import importlib
 
     search_mod = importlib.import_module("basic_memory.mcp.tools.search")
@@ -560,37 +558,22 @@ async def test_search_by_metadata_basic(monkeypatch):
     monkeypatch.setattr(search_mod, "get_project_client", fake_get_project_client)
     monkeypatch.setattr(clients_mod, "SearchClient", MockSearchClient)
 
-    result = await search_by_metadata(
-        filters={"status": "in-progress"},
+    result = await search_mod.search_notes(
         project="test-project",
-        limit=10,
-        offset=0,
+        metadata_filters={"status": "in-progress"},
     )
 
     assert isinstance(result, SearchResponse)
     assert captured_payload["metadata_filters"] == {"status": "in-progress"}
-    assert captured_payload["entity_types"] == ["entity"]
+    # No text/title/permalink should be set
+    assert captured_payload.get("text") is None
+    assert captured_payload.get("title") is None
+    assert captured_payload.get("permalink") is None
 
 
 @pytest.mark.asyncio
-async def test_search_by_metadata_limit_zero():
-    """search_by_metadata rejects limit <= 0 with error string."""
-    from basic_memory.mcp.tools.search import search_by_metadata
-
-    result = await search_by_metadata(
-        filters={"status": "active"},
-        limit=0,
-    )
-
-    assert isinstance(result, str)
-    assert "limit" in result.lower()
-
-
-@pytest.mark.asyncio
-async def test_search_by_metadata_offset_within_page(monkeypatch):
-    """When offset doesn't align to page boundary, results are trimmed."""
-    from basic_memory.mcp.tools.search import search_by_metadata
-
+async def test_search_notes_filter_only_tags(monkeypatch):
+    """search_notes with tags only (no query) sends correct payload."""
     import importlib
 
     search_mod = importlib.import_module("basic_memory.mcp.tools.search")
@@ -604,80 +587,50 @@ async def test_search_by_metadata_offset_within_page(monkeypatch):
     async def fake_get_project_client(*args, **kwargs):
         yield (object(), StubProject())
 
-    from basic_memory.schemas.search import SearchResult
-
-    fake_items = [
-        SearchResult(
-            title=f"Item {i}",
-            permalink=f"item-{i}",
-            file_path=f"item-{i}.md",
-            type=SearchItemType.ENTITY,
-            score=1.0 - i * 0.1,
-        )
-        for i in range(5)
-    ]
-
-    class MockSearchClient:
-        def __init__(self, *args, **kwargs):
-            self.call_count = 0
-
-        async def search(self, payload, page, page_size):
-            self.call_count += 1
-            if page == 1:
-                return SearchResponse(results=fake_items, current_page=1, page_size=page_size)
-            return SearchResponse(results=[], current_page=page, page_size=page_size)
-
-    monkeypatch.setattr(search_mod, "get_project_client", fake_get_project_client)
-    monkeypatch.setattr(clients_mod, "SearchClient", MockSearchClient)
-
-    # offset=2, limit=5 → page=1, offset_within_page=2
-    result = await search_by_metadata(
-        filters={"status": "active"},
-        project="test-project",
-        limit=5,
-        offset=2,
-    )
-
-    assert isinstance(result, SearchResponse)
-    # Should have sliced off the first 2 items
-    assert result.results[0].title == "Item 2"
-
-
-@pytest.mark.asyncio
-async def test_search_by_metadata_error_handling(monkeypatch):
-    """search_by_metadata returns error string on exception."""
-    from basic_memory.mcp.tools.search import search_by_metadata
-
-    import importlib
-
-    search_mod = importlib.import_module("basic_memory.mcp.tools.search")
-    clients_mod = importlib.import_module("basic_memory.mcp.clients")
-
-    class StubProject:
-        name = "test-project"
-        external_id = "test-external-id"
-
-    @asynccontextmanager
-    async def fake_get_project_client(*args, **kwargs):
-        yield (object(), StubProject())
+    captured_payload: dict = {}
 
     class MockSearchClient:
         def __init__(self, *args, **kwargs):
             pass
 
-        async def search(self, *args, **kwargs):
-            raise RuntimeError("database connection lost")
+        async def search(self, payload, page, page_size):
+            captured_payload.update(payload)
+            return SearchResponse(results=[], current_page=page, page_size=page_size)
 
     monkeypatch.setattr(search_mod, "get_project_client", fake_get_project_client)
     monkeypatch.setattr(clients_mod, "SearchClient", MockSearchClient)
 
-    result = await search_by_metadata(
-        filters={"status": "active"},
+    result = await search_mod.search_notes(
         project="test-project",
+        tags=["security", "oauth"],
     )
 
+    assert isinstance(result, SearchResponse)
+    assert captured_payload["tags"] == ["security", "oauth"]
+    assert captured_payload.get("text") is None
+
+
+@pytest.mark.asyncio
+async def test_search_notes_no_criteria_returns_error(monkeypatch):
+    """search_notes with no args at all returns a helpful error string."""
+    import importlib
+
+    search_mod = importlib.import_module("basic_memory.mcp.tools.search")
+
+    class StubProject:
+        name = "test-project"
+        external_id = "test-external-id"
+
+    @asynccontextmanager
+    async def fake_get_project_client(*args, **kwargs):
+        yield (object(), StubProject())
+
+    monkeypatch.setattr(search_mod, "get_project_client", fake_get_project_client)
+
+    result = await search_mod.search_notes(project="test-project")
+
     assert isinstance(result, str)
-    assert "Search Failed" in result
+    assert "No Search Criteria" in result
 
 
 @pytest.mark.asyncio

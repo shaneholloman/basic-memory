@@ -485,7 +485,7 @@ def search_notes(
         with force_routing(local=local, cloud=cloud):
             result = run_with_cleanup(
                 mcp_search(
-                    query=query or "",
+                    query=query or None,
                     project=project,
                     workspace=workspace,
                     search_type=search_type,
