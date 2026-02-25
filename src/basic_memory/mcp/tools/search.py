@@ -302,6 +302,10 @@ async def search_notes(
     - `search_notes("work-project", "category:observation")` - Filter by observation categories
     - `search_notes("team-docs", "author:username")` - Find content by author (if metadata available)
 
+    **Note:** `tag:` shorthand requires `search_type="text"` when semantic search is enabled
+    (the default is hybrid). Alternatively, use the `tags` parameter for tag filtering with
+    any search type: `search_notes("project", "query", tags=["my-tag"])`
+
     ### Search Type Examples
     - `search_notes("my-project", "Meeting", search_type="title")` - Search only in titles
     - `search_notes("work-docs", "docs/meeting-*", search_type="permalink")` - Pattern match permalinks
