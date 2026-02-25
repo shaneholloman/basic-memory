@@ -6,9 +6,10 @@ from datetime import datetime
 from pathlib import Path
 
 import typer
-from rich.console import Console
+from rich.console import Console, Group
 from rich.panel import Panel
 from rich.table import Table
+from rich.text import Text
 
 from basic_memory.cli.app import app
 from basic_memory.cli.auth import CLIAuth
@@ -42,6 +43,17 @@ def format_path(path: str) -> str:
     if path.startswith(home):
         return path.replace(home, "~", 1)  # pragma: no cover
     return path
+
+
+def make_bar(value: int, max_value: int, width: int = 40) -> Text:
+    """Create a horizontal bar chart element using Unicode blocks."""
+    if max_value == 0:
+        return Text("░" * width, style="dim")
+    filled = max(1, round(value / max_value * width)) if value > 0 else 0
+    bar = Text()
+    bar.append("█" * filled, style="cyan")
+    bar.append("░" * (width - filled), style="dim")
+    return bar
 
 
 @project_app.command("list")
@@ -758,99 +770,113 @@ def display_project_info(
             # Convert to JSON and print
             print(json.dumps(info.model_dump(), indent=2, default=str))
         else:
-            # Project configuration section
-            console.print(
-                Panel(
-                    f"Basic Memory version: [bold green]{info.system.version}[/bold green]\n"
-                    f"[bold]Project:[/bold] {info.project_name}\n"
-                    f"[bold]Path:[/bold] {info.project_path}\n"
-                    f"[bold]Default Project:[/bold] {info.default_project}\n",
-                    title="Basic Memory Project Info",
-                    expand=False,
-                )
-            )
+            # --- Left column: Knowledge Graph stats ---
+            left = Table.grid(padding=(0, 2))
+            left.add_column("metric", style="cyan")
+            left.add_column("value", style="green", justify="right")
 
-            # Statistics section
-            stats_table = Table(title="Statistics")
-            stats_table.add_column("Metric", style="cyan")
-            stats_table.add_column("Count", style="green")
+            left.add_row("[bold]Knowledge Graph[/bold]", "")
+            left.add_row("Entities", str(info.statistics.total_entities))
+            left.add_row("Observations", str(info.statistics.total_observations))
+            left.add_row("Relations", str(info.statistics.total_relations))
+            left.add_row("Unresolved", str(info.statistics.total_unresolved_relations))
+            left.add_row("Isolated", str(info.statistics.isolated_entities))
 
-            stats_table.add_row("Entities", str(info.statistics.total_entities))
-            stats_table.add_row("Observations", str(info.statistics.total_observations))
-            stats_table.add_row("Relations", str(info.statistics.total_relations))
-            stats_table.add_row(
-                "Unresolved Relations", str(info.statistics.total_unresolved_relations)
-            )
-            stats_table.add_row("Isolated Entities", str(info.statistics.isolated_entities))
+            # --- Right column: Embeddings ---
+            right = Table.grid(padding=(0, 2))
+            right.add_column("property", style="cyan")
+            right.add_column("value", style="green")
 
-            console.print(stats_table)
+            right.add_row("[bold]Embeddings[/bold]", "")
+            if info.embedding_status:
+                es = info.embedding_status
+                if not es.semantic_search_enabled:
+                    right.add_row("[green]●[/green] Semantic Search", "Disabled")
+                else:
+                    right.add_row("[green]●[/green] Semantic Search", "Enabled")
+                    if es.embedding_provider:
+                        right.add_row("  Provider", es.embedding_provider)
+                    if es.embedding_model:
+                        right.add_row("  Model", es.embedding_model)
+                    # Embedding coverage bar
+                    if es.total_indexed_entities > 0:
+                        coverage_bar = make_bar(
+                            es.total_entities_with_chunks,
+                            es.total_indexed_entities,
+                            width=20,
+                        )
+                        count_text = Text(
+                            f" {es.total_entities_with_chunks}/{es.total_indexed_entities}",
+                            style="green",
+                        )
+                        bar_with_count = Text.assemble("  Indexed  ", coverage_bar, count_text)
+                        right.add_row(bar_with_count, "")
+                    right.add_row("  Chunks", str(es.total_chunks))
+                    if es.reindex_recommended:
+                        right.add_row(
+                            "[yellow]●[/yellow] Status",
+                            "[yellow]Reindex recommended[/yellow]",
+                        )
+                        if es.reindex_reason:
+                            right.add_row("  Reason", f"[yellow]{es.reindex_reason}[/yellow]")
+                    else:
+                        right.add_row("[green]●[/green] Status", "[green]Up to date[/green]")
 
-            # Note types
+            # --- Compose two-column layout (content-sized, NOT Layout) ---
+            columns = Table.grid(padding=(0, 4), expand=False)
+            columns.add_row(left, right)
+
+            # --- Note Types bar chart (top 5 by count) ---
+            bars_section = None
             if info.statistics.note_types:
-                note_types_table = Table(title="Note Types")
-                note_types_table.add_column("Type", style="blue")
-                note_types_table.add_column("Count", style="green")
+                sorted_types = sorted(
+                    info.statistics.note_types.items(), key=lambda x: x[1], reverse=True
+                )
+                top_types = sorted_types[:5]
+                max_count = top_types[0][1] if top_types else 1
 
-                for note_type, count in info.statistics.note_types.items():
-                    note_types_table.add_row(note_type, str(count))
+                bars = Table.grid(padding=(0, 2), expand=False)
+                bars.add_column("type", style="cyan", width=16, justify="right")
+                bars.add_column("bar")
+                bars.add_column("count", style="green", justify="right")
 
-                console.print(note_types_table)
+                for note_type, count in top_types:
+                    bars.add_row(note_type, make_bar(count, max_count), str(count))
 
-            # Most connected entities
-            if info.statistics.most_connected_entities:  # pragma: no cover
-                connected_table = Table(title="Most Connected Entities")
-                connected_table.add_column("Title", style="blue")
-                connected_table.add_column("Permalink", style="cyan")
-                connected_table.add_column("Relations", style="green")
+                remaining = len(sorted_types) - len(top_types)
+                bars_section = Group(
+                    "[bold]Note Types[/bold]",
+                    bars,
+                    f"[dim]+{remaining} more types[/dim]" if remaining > 0 else "",
+                )
 
-                for entity in info.statistics.most_connected_entities:
-                    connected_table.add_row(
-                        entity["title"], entity["permalink"], str(entity["relation_count"])
-                    )
-
-                console.print(connected_table)
-
-            # Recent activity
-            if info.activity.recently_updated:  # pragma: no cover
-                recent_table = Table(title="Recent Activity")
-                recent_table.add_column("Title", style="blue")
-                recent_table.add_column("Type", style="cyan")
-                recent_table.add_column("Last Updated", style="green")
-
-                for entity in info.activity.recently_updated[:5]:  # Show top 5
-                    updated_at = (
-                        datetime.fromisoformat(entity["updated_at"])
-                        if isinstance(entity["updated_at"], str)
-                        else entity["updated_at"]
-                    )
-                    recent_table.add_row(
-                        entity["title"],
-                        entity["note_type"],
-                        updated_at.strftime("%Y-%m-%d %H:%M"),
-                    )
-
-                console.print(recent_table)
-
-            # Available projects
-            projects_table = Table(title="Available Projects")
-            projects_table.add_column("Name", style="blue")
-            projects_table.add_column("Path", style="cyan")
-            projects_table.add_column("Default", style="green")
-
-            for name, proj_info in info.available_projects.items():
-                is_default = name == info.default_project
-                project_path = proj_info["path"]
-                projects_table.add_row(name, project_path, "[X]" if is_default else "")
-
-            console.print(projects_table)
-
-            # Timestamp
+            # --- Footer ---
             current_time = (
                 datetime.fromisoformat(str(info.system.timestamp))
                 if isinstance(info.system.timestamp, str)
                 else info.system.timestamp
             )
-            console.print(f"\nTimestamp: [cyan]{current_time.strftime('%Y-%m-%d %H:%M:%S')}[/cyan]")
+            footer = (
+                f"[dim]{format_path(info.project_path)}  "
+                f"default: {info.default_project}  "
+                f"{current_time.strftime('%Y-%m-%d %H:%M')}[/dim]"
+            )
+
+            # --- Assemble dashboard ---
+            parts: list = [columns, ""]
+            if bars_section:
+                parts.extend([bars_section, ""])
+            parts.append(footer)
+            body = Group(*parts)
+
+            console.print(
+                Panel(
+                    body,
+                    title=f"[bold]{info.project_name}[/bold]",
+                    subtitle=f"Basic Memory {info.system.version}",
+                    expand=False,
+                )
+            )
 
     except typer.Exit:
         raise
