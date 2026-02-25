@@ -99,7 +99,8 @@ async def test_build_context_underscore_normalization(mcp_server, app, test_proj
         assert "related-to" in response_text_related.lower()
 
         # Test 4: Test exact path (non-wildcard) with underscore
-        # Exact relation permalink would be child/relation/target
+        # Previously this returned empty (no exact permalink match). Now LinkResolver
+        # resolves to the child entity, so we get its relations back.
         result_exact = await client.call_tool(
             "build_context",
             {
@@ -110,7 +111,8 @@ async def test_build_context_underscore_normalization(mcp_server, app, test_proj
 
         response_text_exact = result_exact.content[0].text  # pyright: ignore
         assert '"results"' in response_text_exact
-        assert "part-of" in response_text_exact.lower()
+        # LinkResolver resolves to child-with-underscore entity; its relation_type is "part_of"
+        assert "part_of" in response_text_exact.lower()
 
 
 @pytest.mark.asyncio

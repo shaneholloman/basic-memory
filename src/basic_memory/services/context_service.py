@@ -1,8 +1,10 @@
 """Service for building rich context from the knowledge graph."""
 
+from __future__ import annotations
+
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import List, Optional, Tuple
+from typing import List, Optional, Tuple, TYPE_CHECKING
 
 
 from loguru import logger
@@ -15,6 +17,9 @@ from basic_memory.repository.search_repository import SearchRepository, SearchIn
 from basic_memory.schemas.memory import MemoryUrl, memory_url_path
 from basic_memory.schemas.search import SearchItemType
 from basic_memory.utils import generate_permalink
+
+if TYPE_CHECKING:
+    from basic_memory.services.link_resolver import LinkResolver
 
 
 @dataclass
@@ -82,10 +87,12 @@ class ContextService:
         search_repository: SearchRepository,
         entity_repository: EntityRepository,
         observation_repository: ObservationRepository,
+        link_resolver: Optional[LinkResolver] = None,
     ):
         self.search_repository = search_repository
         self.entity_repository = entity_repository
         self.observation_repository = observation_repository
+        self.link_resolver = link_resolver
 
     async def build_context(
         self,
@@ -131,6 +138,24 @@ class ContextService:
                 primary = await self.search_repository.search(
                     permalink=normalized_path, limit=fetch_limit, offset=offset
                 )
+
+                # Trigger: exact permalink lookup returned no results
+                # Why: the identifier may be valid but not an exact permalink match
+                #      (e.g., missing project prefix, title instead of permalink)
+                # Outcome: use LinkResolver's multi-strategy resolution to find the entity,
+                #          then retry search with its actual permalink
+                if not primary and self.link_resolver:
+                    entity = await self.link_resolver.resolve_link(
+                        path, use_search=True, strict=False
+                    )
+                    if entity:
+                        logger.debug(
+                            f"LinkResolver resolved '{path}' to permalink '{entity.permalink}'"
+                        )
+                        normalized_path = entity.permalink
+                        primary = await self.search_repository.search(
+                            permalink=entity.permalink, limit=fetch_limit, offset=offset
+                        )
         else:
             logger.debug(f"Build context for '{types}'")
             primary = await self.search_repository.search(

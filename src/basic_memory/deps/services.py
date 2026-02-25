@@ -309,11 +309,13 @@ async def get_context_service(
     search_repository: SearchRepositoryDep,
     entity_repository: EntityRepositoryDep,
     observation_repository: ObservationRepositoryDep,
+    link_resolver: LinkResolverDep,
 ) -> ContextService:
     return ContextService(
         search_repository=search_repository,
         entity_repository=entity_repository,
         observation_repository=observation_repository,
+        link_resolver=link_resolver,
     )
 
 
@@ -324,12 +326,14 @@ async def get_context_service_v2(  # pragma: no cover
     search_repository: SearchRepositoryV2Dep,
     entity_repository: EntityRepositoryV2Dep,
     observation_repository: ObservationRepositoryV2Dep,
+    link_resolver: LinkResolverV2Dep,
 ) -> ContextService:
     """Create ContextService for v2 API."""
     return ContextService(
         search_repository=search_repository,
         entity_repository=entity_repository,
         observation_repository=observation_repository,
+        link_resolver=link_resolver,
     )
 
 
@@ -340,12 +344,14 @@ async def get_context_service_v2_external(
     search_repository: SearchRepositoryV2ExternalDep,
     entity_repository: EntityRepositoryV2ExternalDep,
     observation_repository: ObservationRepositoryV2ExternalDep,
+    link_resolver: LinkResolverV2ExternalDep,
 ) -> ContextService:
     """Create ContextService for v2 API (uses external_id)."""
     return ContextService(
         search_repository=search_repository,
         entity_repository=entity_repository,
         observation_repository=observation_repository,
+        link_resolver=link_resolver,
     )
 
 

@@ -14,9 +14,13 @@ from basic_memory.models.project import Project
 
 
 @pytest_asyncio.fixture
-async def context_service(search_repository, entity_repository, observation_repository):
+async def context_service(
+    search_repository, entity_repository, observation_repository, link_resolver
+):
     """Create context service for testing."""
-    return ContextService(search_repository, entity_repository, observation_repository)
+    return ContextService(
+        search_repository, entity_repository, observation_repository, link_resolver=link_resolver
+    )
 
 
 @pytest.mark.asyncio
@@ -333,3 +337,49 @@ async def test_project_isolation_in_find_related(session_maker, app_config):
         assert entity1_p1.project_id == project1.id
         assert entity2_p1.project_id == project1.id
         assert entity1_p2.project_id == project2.id
+
+
+@pytest.mark.asyncio
+async def test_build_context_fallback_via_link_resolver(context_service, test_graph):
+    """Test that build_context falls back to LinkResolver when exact permalink fails.
+
+    The test_graph creates entities with permalinks like 'test-project/test/root'.
+    Looking up by title ('Root') won't match the exact permalink, but LinkResolver
+    can resolve it via title matching.
+    """
+    # This identifier is the entity title, not a permalink — exact lookup will fail
+    url = memory_url.validate_strings("memory://Root")
+    context_result = await context_service.build_context(url)
+
+    # LinkResolver should resolve 'Root' → entity with permalink 'test-project/test/root'
+    assert context_result.metadata.primary_count == 1
+    assert len(context_result.results) == 1
+    assert context_result.results[0].primary_result.id == test_graph["root"].id
+
+
+@pytest.mark.asyncio
+async def test_build_context_fallback_not_found(context_service):
+    """Test that build_context returns empty when both exact lookup and fallback fail."""
+    url = memory_url.validate_strings("memory://completely-nonexistent-note-xyz")
+    context_result = await context_service.build_context(url)
+
+    assert context_result.metadata.primary_count == 0
+    assert len(context_result.results) == 0
+
+
+@pytest.mark.asyncio
+async def test_build_context_without_link_resolver(
+    search_repository, entity_repository, observation_repository, test_graph
+):
+    """Test that build_context still works without a link_resolver (no fallback)."""
+    service = ContextService(search_repository, entity_repository, observation_repository)
+
+    # Exact permalink lookup should still work
+    url = memory_url.validate_strings("memory://test-project/test/root")
+    context_result = await service.build_context(url)
+    assert context_result.metadata.primary_count == 1
+
+    # Title-based lookup should return empty (no fallback available)
+    url = memory_url.validate_strings("memory://Root")
+    context_result = await service.build_context(url)
+    assert context_result.metadata.primary_count == 0

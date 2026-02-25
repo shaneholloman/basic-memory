@@ -1101,8 +1101,11 @@ async def test_sync_permalink_not_created_if_no_frontmatter(
     sync_service: SyncService,
     project_config: ProjectConfig,
     file_service: FileService,
+    app_config: BasicMemoryConfig,
 ):
-    """Test that sync resolves permalink conflicts on update."""
+    """Test that sync does not add frontmatter when ensure_frontmatter_on_sync is disabled."""
+    app_config.ensure_frontmatter_on_sync = False
+
     project_dir = project_config.home
 
     file = project_dir / "one.md"

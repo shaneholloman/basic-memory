@@ -246,7 +246,7 @@ class BasicMemoryConfig(BaseSettings):
     )
 
     ensure_frontmatter_on_sync: bool = Field(
-        default=False,
+        default=True,
         description="Ensure markdown files have frontmatter during sync by adding derived title/type/permalink when missing. When combined with disable_permalinks=True, this setting takes precedence for missing-frontmatter files and still writes permalinks.",
     )
 
