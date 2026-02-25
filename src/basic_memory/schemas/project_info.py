@@ -79,6 +79,28 @@ class SystemStatus(BaseModel):
     timestamp: datetime = Field(description="Timestamp when the information was collected")
 
 
+class EmbeddingStatus(BaseModel):
+    """Embedding/vector index status for a project."""
+
+    # Config
+    semantic_search_enabled: bool
+    embedding_provider: Optional[str] = None
+    embedding_model: Optional[str] = None
+    embedding_dimensions: Optional[int] = None
+
+    # Counts
+    total_indexed_entities: int = 0
+    total_entities_with_chunks: int = 0
+    total_chunks: int = 0
+    total_embeddings: int = 0
+    orphaned_chunks: int = 0
+    vector_tables_exist: bool = False
+
+    # Derived
+    reindex_recommended: bool = False
+    reindex_reason: Optional[str] = None
+
+
 class ProjectInfoResponse(BaseModel):
     """Response for the project_info tool."""
 
@@ -98,6 +120,11 @@ class ProjectInfoResponse(BaseModel):
 
     # System status
     system: SystemStatus = Field(description="System and service status information")
+
+    # Embedding status
+    embedding_status: Optional[EmbeddingStatus] = Field(
+        default=None, description="Embedding/vector index status"
+    )
 
 
 class ProjectInfoRequest(BaseModel):

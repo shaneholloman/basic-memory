@@ -16,6 +16,7 @@ from basic_memory.models import Project
 from basic_memory.repository.project_repository import ProjectRepository
 from basic_memory.schemas import (
     ActivityMetrics,
+    EmbeddingStatus,
     ProjectInfoResponse,
     ProjectStatistics,
     SystemStatus,
@@ -597,6 +598,9 @@ class ProjectService:
         # Get activity metrics for the specified project
         activity = await self.get_activity_metrics(db_project.id)
 
+        # Get embedding status for the specified project
+        embedding_status = await self.get_embedding_status(db_project.id)
+
         # Get system status
         system = self.get_system_status()
 
@@ -650,6 +654,7 @@ class ProjectService:
             statistics=statistics,
             activity=activity,
             system=system,
+            embedding_status=embedding_status,
         )
 
     async def get_statistics(self, project_id: int) -> ProjectStatistics:
@@ -916,6 +921,163 @@ class ProjectService:
             recently_created=recently_created,
             recently_updated=recently_updated,
             monthly_growth=monthly_growth,
+        )
+
+    async def get_embedding_status(self, project_id: int) -> EmbeddingStatus:
+        """Get embedding/vector index status for the specified project.
+
+        Reports config, counts, and whether a reindex is recommended.
+        """
+        config = self.config_manager.config
+        semantic_enabled = config.semantic_search_enabled
+
+        # When semantic search is disabled, return minimal status
+        if not semantic_enabled:
+            return EmbeddingStatus(semantic_search_enabled=False)
+
+        provider = config.semantic_embedding_provider
+        model = config.semantic_embedding_model
+        dimensions = config.semantic_embedding_dimensions
+
+        is_postgres = config.database_backend == DatabaseBackend.POSTGRES
+
+        # --- Check vector table existence ---
+        if is_postgres:
+            table_check_sql = text(
+                "SELECT COUNT(*) FROM information_schema.tables "
+                "WHERE table_name = 'search_vector_chunks'"
+            )
+        else:
+            table_check_sql = text(
+                "SELECT COUNT(*) FROM sqlite_master "
+                "WHERE type = 'table' AND name = 'search_vector_chunks'"
+            )
+
+        table_result = await self.repository.execute_query(table_check_sql, {})
+        vector_tables_exist = (table_result.scalar() or 0) > 0
+
+        if not vector_tables_exist:
+            # Count distinct entities in search index for the recommendation message
+            si_result = await self.repository.execute_query(
+                text(
+                    "SELECT COUNT(DISTINCT entity_id) FROM search_index "
+                    "WHERE project_id = :project_id"
+                ),
+                {"project_id": project_id},
+            )
+            total_indexed_entities = si_result.scalar() or 0
+
+            return EmbeddingStatus(
+                semantic_search_enabled=True,
+                embedding_provider=provider,
+                embedding_model=model,
+                embedding_dimensions=dimensions,
+                total_indexed_entities=total_indexed_entities,
+                vector_tables_exist=False,
+                reindex_recommended=True,
+                reindex_reason=(
+                    "Vector tables not initialized — run: bm reindex --embeddings"
+                ),
+            )
+
+        # --- Count queries (tables exist) ---
+        si_result = await self.repository.execute_query(
+            text(
+                "SELECT COUNT(DISTINCT entity_id) FROM search_index "
+                "WHERE project_id = :project_id"
+            ),
+            {"project_id": project_id},
+        )
+        total_indexed_entities = si_result.scalar() or 0
+
+        chunks_result = await self.repository.execute_query(
+            text("SELECT COUNT(*) FROM search_vector_chunks WHERE project_id = :project_id"),
+            {"project_id": project_id},
+        )
+        total_chunks = chunks_result.scalar() or 0
+
+        entities_with_chunks_result = await self.repository.execute_query(
+            text(
+                "SELECT COUNT(DISTINCT entity_id) FROM search_vector_chunks "
+                "WHERE project_id = :project_id"
+            ),
+            {"project_id": project_id},
+        )
+        total_entities_with_chunks = entities_with_chunks_result.scalar() or 0
+
+        # Embeddings count — join pattern differs between SQLite and Postgres
+        if is_postgres:
+            embeddings_sql = text(
+                "SELECT COUNT(*) FROM search_vector_chunks c "
+                "JOIN search_vector_embeddings e ON e.chunk_id = c.id "
+                "WHERE c.project_id = :project_id"
+            )
+        else:
+            embeddings_sql = text(
+                "SELECT COUNT(*) FROM search_vector_chunks c "
+                "JOIN search_vector_embeddings e ON e.rowid = c.id "
+                "WHERE c.project_id = :project_id"
+            )
+
+        embeddings_result = await self.repository.execute_query(
+            embeddings_sql, {"project_id": project_id}
+        )
+        total_embeddings = embeddings_result.scalar() or 0
+
+        # Orphaned chunks (chunks without embeddings — indicates interrupted indexing)
+        if is_postgres:
+            orphan_sql = text(
+                "SELECT COUNT(*) FROM search_vector_chunks c "
+                "LEFT JOIN search_vector_embeddings e ON e.chunk_id = c.id "
+                "WHERE c.project_id = :project_id AND e.chunk_id IS NULL"
+            )
+        else:
+            orphan_sql = text(
+                "SELECT COUNT(*) FROM search_vector_chunks c "
+                "LEFT JOIN search_vector_embeddings e ON e.rowid = c.id "
+                "WHERE c.project_id = :project_id AND e.rowid IS NULL"
+            )
+
+        orphan_result = await self.repository.execute_query(
+            orphan_sql, {"project_id": project_id}
+        )
+        orphaned_chunks = orphan_result.scalar() or 0
+
+        # --- Reindex recommendation logic (priority order) ---
+        reindex_recommended = False
+        reindex_reason = None
+
+        if total_indexed_entities > 0 and total_chunks == 0:
+            reindex_recommended = True
+            reindex_reason = (
+                "Embeddings have never been built — run: bm reindex --embeddings"
+            )
+        elif orphaned_chunks > 0:
+            reindex_recommended = True
+            reindex_reason = (
+                f"{orphaned_chunks} orphaned chunks found (interrupted indexing) "
+                "— run: bm reindex --embeddings"
+            )
+        elif total_indexed_entities > total_entities_with_chunks:
+            missing = total_indexed_entities - total_entities_with_chunks
+            reindex_recommended = True
+            reindex_reason = (
+                f"{missing} entities missing embeddings — run: bm reindex --embeddings"
+            )
+
+        return EmbeddingStatus(
+            semantic_search_enabled=True,
+            embedding_provider=provider,
+            embedding_model=model,
+            embedding_dimensions=dimensions,
+            total_indexed_entities=total_indexed_entities,
+            total_entities_with_chunks=total_entities_with_chunks,
+            total_chunks=total_chunks,
+            total_embeddings=total_embeddings,
+            orphaned_chunks=orphaned_chunks,
+            vector_tables_exist=True,
+            reindex_recommended=reindex_recommended,
+            reindex_reason=reindex_reason,
         )
 
     def get_system_status(self) -> SystemStatus:

@@ -41,6 +41,7 @@ from basic_memory.schemas.project_info import (
     ProjectStatistics,
     ActivityMetrics,
     SystemStatus,
+    EmbeddingStatus,
     ProjectInfoResponse,
 )
 
@@ -78,6 +79,7 @@ __all__ = [
     "ProjectStatistics",
     "ActivityMetrics",
     "SystemStatus",
+    "EmbeddingStatus",
     "ProjectInfoResponse",
     # Directory
     "DirectoryNode",
