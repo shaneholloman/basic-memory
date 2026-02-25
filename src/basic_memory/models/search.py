@@ -93,6 +93,27 @@ CREATE VIRTUAL TABLE IF NOT EXISTS search_index USING fts5(
 );
 """)
 
+# Postgres semantic chunk metadata table.
+# Matches the Alembic migration (h1b2c3d4e5f6) schema.
+# Used by tests to create the table without running full migrations.
+CREATE_POSTGRES_SEARCH_VECTOR_CHUNKS_TABLE = DDL("""
+CREATE TABLE IF NOT EXISTS search_vector_chunks (
+    id BIGSERIAL PRIMARY KEY,
+    entity_id INTEGER NOT NULL,
+    project_id INTEGER NOT NULL,
+    chunk_key TEXT NOT NULL,
+    chunk_text TEXT NOT NULL,
+    source_hash TEXT NOT NULL,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE (project_id, entity_id, chunk_key)
+)
+""")
+
+CREATE_POSTGRES_SEARCH_VECTOR_CHUNKS_INDEX = DDL("""
+CREATE INDEX IF NOT EXISTS idx_search_vector_chunks_project_entity
+ON search_vector_chunks (project_id, entity_id)
+""")
+
 # Local semantic chunk metadata table for SQLite.
 # Embedding vectors live in sqlite-vec virtual table keyed by this table rowid.
 CREATE_SQLITE_SEARCH_VECTOR_CHUNKS = DDL("""

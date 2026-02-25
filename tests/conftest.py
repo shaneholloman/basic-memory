@@ -188,7 +188,12 @@ async def engine_factory(
 
     Uses parameterized db_backend fixture to run tests against both backends.
     """
-    from basic_memory.models.search import CREATE_SEARCH_INDEX
+    from basic_memory.models.search import (
+        CREATE_SEARCH_INDEX,
+        CREATE_SQLITE_SEARCH_VECTOR_CHUNKS,
+        CREATE_SQLITE_SEARCH_VECTOR_CHUNKS_PROJECT_ENTITY,
+        CREATE_SQLITE_SEARCH_VECTOR_CHUNKS_UNIQUE,
+    )
 
     if db_backend == "postgres":
         # Postgres mode using testcontainers
@@ -221,6 +226,8 @@ async def engine_factory(
             CREATE_POSTGRES_SEARCH_INDEX_FTS,
             CREATE_POSTGRES_SEARCH_INDEX_METADATA,
             CREATE_POSTGRES_SEARCH_INDEX_PERMALINK,
+            CREATE_POSTGRES_SEARCH_VECTOR_CHUNKS_TABLE,
+            CREATE_POSTGRES_SEARCH_VECTOR_CHUNKS_INDEX,
         )
 
         # Drop and recreate all tables for test isolation
@@ -235,6 +242,8 @@ async def engine_factory(
             await conn.execute(CREATE_POSTGRES_SEARCH_INDEX_FTS)
             await conn.execute(CREATE_POSTGRES_SEARCH_INDEX_METADATA)
             await conn.execute(CREATE_POSTGRES_SEARCH_INDEX_PERMALINK)
+            await conn.execute(CREATE_POSTGRES_SEARCH_VECTOR_CHUNKS_TABLE)
+            await conn.execute(CREATE_POSTGRES_SEARCH_VECTOR_CHUNKS_INDEX)
 
             # Mark migrations as already applied for this test-created schema.
             #
@@ -269,6 +278,9 @@ async def engine_factory(
             async with engine.begin() as conn:
                 await conn.run_sync(Base.metadata.create_all)
                 await conn.execute(CREATE_SEARCH_INDEX)
+                await conn.execute(CREATE_SQLITE_SEARCH_VECTOR_CHUNKS)
+                await conn.execute(CREATE_SQLITE_SEARCH_VECTOR_CHUNKS_PROJECT_ENTITY)
+                await conn.execute(CREATE_SQLITE_SEARCH_VECTOR_CHUNKS_UNIQUE)
 
             # Yield after setup is complete
             yield engine, session_maker

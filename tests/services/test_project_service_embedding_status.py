@@ -1,11 +1,17 @@
 """Tests for ProjectService.get_embedding_status()."""
 
+import os
 from unittest.mock import patch
 
 import pytest
+from sqlalchemy import text
 
 from basic_memory.schemas.project_info import EmbeddingStatus
 from basic_memory.services.project_service import ProjectService
+
+
+def _is_postgres() -> bool:
+    return os.environ.get("BASIC_MEMORY_TEST_POSTGRES", "").lower() in ("1", "true", "yes")
 
 
 @pytest.mark.asyncio
@@ -32,6 +38,11 @@ async def test_embedding_status_vector_tables_missing(
     project_service: ProjectService, test_graph, test_project
 ):
     """When vector tables don't exist, recommend reindex."""
+    # Drop the chunks table created by the fixture to simulate missing vector tables
+    # Postgres requires CASCADE (due to index dependencies); SQLite doesn't support it
+    drop_sql = "DROP TABLE IF EXISTS search_vector_chunks CASCADE" if _is_postgres() else "DROP TABLE IF EXISTS search_vector_chunks"
+    await project_service.repository.execute_query(text(drop_sql), {})
+
     with patch.object(
         type(project_service),
         "config_manager",
@@ -41,15 +52,12 @@ async def test_embedding_status_vector_tables_missing(
     ):
         status = await project_service.get_embedding_status(test_project.id)
 
-    # Vector tables are not created by the standard test fixtures
-    # If they don't exist, status should flag it
     assert status.semantic_search_enabled is True
     assert status.embedding_provider == "fastembed"
     assert status.embedding_model == "bge-small-en-v1.5"
-
-    if not status.vector_tables_exist:
-        assert status.reindex_recommended is True
-        assert "Vector tables not initialized" in (status.reindex_reason or "")
+    assert status.vector_tables_exist is False
+    assert status.reindex_recommended is True
+    assert "Vector tables not initialized" in (status.reindex_reason or "")
 
 
 @pytest.mark.asyncio
@@ -57,24 +65,7 @@ async def test_embedding_status_entities_without_chunks(
     project_service: ProjectService, test_graph, test_project
 ):
     """When entities have search_index rows but no chunks, recommend reindex."""
-    # Create vector tables (empty) so the table-existence check passes
-    from sqlalchemy import text
-
-    await project_service.repository.execute_query(
-        text(
-            "CREATE TABLE IF NOT EXISTS search_vector_chunks ("
-            "  id INTEGER PRIMARY KEY AUTOINCREMENT,"
-            "  entity_id INTEGER NOT NULL,"
-            "  project_id INTEGER NOT NULL,"
-            "  chunk_key TEXT NOT NULL,"
-            "  chunk_text TEXT NOT NULL,"
-            "  source_hash TEXT NOT NULL,"
-            "  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP"
-            ")"
-        ),
-        {},
-    )
-
+    # search_vector_chunks table is created by the test fixture (empty)
     with patch.object(
         type(project_service),
         "config_manager",
@@ -98,24 +89,6 @@ async def test_embedding_status_orphaned_chunks(
     project_service: ProjectService, test_graph, test_project
 ):
     """When chunks exist without matching embeddings, recommend reindex."""
-    from sqlalchemy import text
-
-    # Create vector tables
-    await project_service.repository.execute_query(
-        text(
-            "CREATE TABLE IF NOT EXISTS search_vector_chunks ("
-            "  id INTEGER PRIMARY KEY AUTOINCREMENT,"
-            "  entity_id INTEGER NOT NULL,"
-            "  project_id INTEGER NOT NULL,"
-            "  chunk_key TEXT NOT NULL,"
-            "  chunk_text TEXT NOT NULL,"
-            "  source_hash TEXT NOT NULL,"
-            "  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP"
-            ")"
-        ),
-        {},
-    )
-
     # Insert a chunk row (no matching embedding = orphan)
     # Get a real entity_id from the test graph
     entity_result = await project_service.repository.execute_query(
@@ -133,12 +106,14 @@ async def test_embedding_status_orphaned_chunks(
         {"entity_id": entity_id, "project_id": test_project.id},
     )
 
-    # Create a minimal search_vector_embeddings table (not sqlite-vec virtual table)
-    # so the LEFT JOIN works and finds the orphan
+    # Create a minimal search_vector_embeddings stub (not a real vector table)
+    # so the LEFT JOIN works and finds the orphan.
+    # Uses chunk_id as PK — Postgres queries join on chunk_id,
+    # SQLite queries join on rowid which aliases INTEGER PRIMARY KEY.
     await project_service.repository.execute_query(
         text(
             "CREATE TABLE IF NOT EXISTS search_vector_embeddings ("
-            "  rowid INTEGER PRIMARY KEY"
+            "  chunk_id INTEGER PRIMARY KEY"
             ")"
         ),
         {},
@@ -153,6 +128,11 @@ async def test_embedding_status_orphaned_chunks(
     ):
         status = await project_service.get_embedding_status(test_project.id)
 
+    # Clean up stub table to avoid polluting subsequent tests
+    await project_service.repository.execute_query(
+        text("DROP TABLE IF EXISTS search_vector_embeddings"), {}
+    )
+
     assert status.vector_tables_exist is True
     assert status.total_chunks == 1
     assert status.orphaned_chunks == 1
@@ -165,33 +145,22 @@ async def test_embedding_status_healthy(
     project_service: ProjectService, test_graph, test_project
 ):
     """When all entities have embeddings, no reindex recommended."""
-    from sqlalchemy import text
-
-    # Create vector chunks table
+    # Clear any leftover data from prior tests
     await project_service.repository.execute_query(
-        text(
-            "CREATE TABLE IF NOT EXISTS search_vector_chunks ("
-            "  id INTEGER PRIMARY KEY AUTOINCREMENT,"
-            "  entity_id INTEGER NOT NULL,"
-            "  project_id INTEGER NOT NULL,"
-            "  chunk_key TEXT NOT NULL,"
-            "  chunk_text TEXT NOT NULL,"
-            "  source_hash TEXT NOT NULL,"
-            "  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP"
-            ")"
-        ),
-        {},
+        text("DELETE FROM search_vector_chunks"), {}
     )
 
     # Drop any existing virtual table (may have been created by search_service init)
-    # and recreate as a simple regular table for testing the join logic
+    # and recreate as a simple regular table for testing the join logic.
+    # Uses chunk_id as PK — Postgres queries join on chunk_id,
+    # SQLite queries join on rowid which aliases INTEGER PRIMARY KEY.
     await project_service.repository.execute_query(
         text("DROP TABLE IF EXISTS search_vector_embeddings"), {}
     )
     await project_service.repository.execute_query(
         text(
             "CREATE TABLE search_vector_embeddings ("
-            "  rowid INTEGER PRIMARY KEY"
+            "  chunk_id INTEGER PRIMARY KEY"
             ")"
         ),
         {},
@@ -222,8 +191,8 @@ async def test_embedding_status_healthy(
             },
         )
         await project_service.repository.execute_query(
-            text("INSERT INTO search_vector_embeddings (rowid) VALUES (:rowid)"),
-            {"rowid": chunk_id},
+            text("INSERT INTO search_vector_embeddings (chunk_id) VALUES (:chunk_id)"),
+            {"chunk_id": chunk_id},
         )
         chunk_id += 1
 
@@ -235,6 +204,11 @@ async def test_embedding_status_healthy(
         ),
     ):
         status = await project_service.get_embedding_status(test_project.id)
+
+    # Clean up stub table to avoid polluting subsequent tests
+    await project_service.repository.execute_query(
+        text("DROP TABLE IF EXISTS search_vector_embeddings"), {}
+    )
 
     assert status.vector_tables_exist is True
     assert status.total_chunks > 0
