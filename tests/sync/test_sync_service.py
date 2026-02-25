@@ -1754,3 +1754,59 @@ async def test_sync_handles_file_not_found_gracefully(
     # Entity should be deleted from database
     entity = await sync_service.entity_repository.get_by_file_path("missing_file.md")
     assert entity is None, "Orphaned entity should be deleted when file is not found"
+
+
+@pytest.mark.asyncio
+async def test_sync_file_continues_on_semantic_dependency_error(
+    sync_service: SyncService, project_config: ProjectConfig
+):
+    """Test that sync_file returns the entity even when vector embedding fails.
+
+    When sqlite-vec or another semantic dependency is missing, FTS indexing
+    still succeeds. The entity should be returned successfully with a warning,
+    not treated as a file-level failure.
+    """
+    from unittest.mock import AsyncMock
+
+    from basic_memory.repository.semantic_errors import SemanticDependenciesMissingError
+
+    project_dir = project_config.home
+    content = """---
+type: note
+---
+# Semantic Error Test
+
+## Observations
+- [test] This entity should still be synced despite embedding failure
+"""
+    await create_test_file(project_dir / "semantic_test.md", content)
+    await sync_service.sync(project_dir)
+
+    # Patch index_entity to raise SemanticDependenciesMissingError
+    original_index = sync_service.search_service.index_entity
+    call_count = 0
+
+    async def index_with_semantic_error(entity, **kwargs):
+        nonlocal call_count
+        call_count += 1
+        raise SemanticDependenciesMissingError("sqlite-vec package is missing")
+
+    sync_service.search_service.index_entity = AsyncMock(side_effect=index_with_semantic_error)
+
+    try:
+        # Modify the file so it gets re-synced
+        await create_test_file(
+            project_dir / "semantic_test.md",
+            content.replace("should still be synced", "updated content"),
+        )
+
+        entity, checksum = await sync_service.sync_file("semantic_test.md", new=False)
+
+        # Entity should be returned successfully despite semantic error
+        assert entity is not None, "Entity should be returned even when embedding fails"
+        assert checksum is not None
+
+        # Verify circuit breaker was NOT triggered (failure not recorded)
+        assert "semantic_test.md" not in sync_service._file_failures
+    finally:
+        sync_service.search_service.index_entity = original_index

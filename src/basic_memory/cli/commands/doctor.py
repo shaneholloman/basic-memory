@@ -139,6 +139,9 @@ def doctor(
     """Run local consistency checks to verify file/database sync."""
     try:
         validate_routing_flags(local, cloud)
+        # Doctor runs local filesystem checks — always default to local routing
+        if not local and not cloud:
+            local = True
         with force_routing(local=local, cloud=cloud):
             run_with_cleanup(run_doctor())
     except (ToolError, ValueError) as e:

@@ -179,6 +179,13 @@ def status(
 
     try:
         validate_routing_flags(local, cloud)
+        # Trigger: no explicit routing flag provided
+        # Why: status scans the local filesystem — cloud routing would use the
+        #      Docker-internal path stored in the cloud database, which doesn't
+        #      exist locally.
+        # Outcome: default to local routing unless --cloud was explicitly requested.
+        if not local and not cloud:
+            local = True
         with force_routing(local=local, cloud=cloud):
             run_with_cleanup(run_status(project, verbose))  # pragma: no cover
     except ValueError as e:

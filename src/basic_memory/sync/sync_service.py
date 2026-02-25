@@ -29,6 +29,7 @@ from basic_memory.repository import (
 )
 from basic_memory.repository.search_repository import create_search_repository
 from basic_memory.services import EntityService, FileService
+from basic_memory.repository.semantic_errors import SemanticDependenciesMissingError
 from basic_memory.services.exceptions import SyncFatalError
 from basic_memory.services.link_resolver import LinkResolver
 from basic_memory.services.search_service import SearchService
@@ -600,7 +601,18 @@ class SyncService:
                 entity, checksum = await self.sync_regular_file(path, new)
 
             if entity is not None:
-                await self.search_service.index_entity(entity)
+                try:
+                    await self.search_service.index_entity(entity)
+                except SemanticDependenciesMissingError:
+                    # Trigger: sqlite-vec or embedding provider unavailable
+                    # Why: FTS indexing succeeded but vector embeddings cannot be generated.
+                    #      Don't fail the entire sync — the entity is usable for text search.
+                    # Outcome: entity returned successfully, warning logged for visibility.
+                    logger.warning(
+                        f"Semantic search dependencies missing — vector embeddings skipped "
+                        f"for path={path}. Run 'bm reindex --embeddings' after resolving "
+                        f"the dependency issue."
+                    )
 
                 # Clear failure tracking on successful sync
                 self._clear_failure(path)
