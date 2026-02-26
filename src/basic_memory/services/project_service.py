@@ -942,19 +942,21 @@ class ProjectService:
         is_postgres = config.database_backend == DatabaseBackend.POSTGRES
 
         # --- Check vector table existence ---
+        # Both search_vector_chunks and search_vector_embeddings must exist
+        # for the detailed stats queries (JOINs between them) to work.
         if is_postgres:
             table_check_sql = text(
                 "SELECT COUNT(*) FROM information_schema.tables "
-                "WHERE table_name = 'search_vector_chunks'"
+                "WHERE table_name IN ('search_vector_chunks', 'search_vector_embeddings')"
             )
         else:
             table_check_sql = text(
                 "SELECT COUNT(*) FROM sqlite_master "
-                "WHERE type = 'table' AND name = 'search_vector_chunks'"
+                "WHERE type = 'table' AND name IN ('search_vector_chunks', 'search_vector_embeddings')"
             )
 
         table_result = await self.repository.execute_query(table_check_sql, {})
-        vector_tables_exist = (table_result.scalar() or 0) > 0
+        vector_tables_exist = (table_result.scalar() or 0) == 2
 
         if not vector_tables_exist:
             # Count distinct entities in search index for the recommendation message

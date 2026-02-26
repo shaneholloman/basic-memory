@@ -8,6 +8,7 @@ from typer.testing import CliRunner
 from basic_memory.cli.app import app
 import basic_memory
 from basic_memory.cli.promo import (
+    _is_interactive_session,
     maybe_show_cloud_promo,
     maybe_show_init_line,
 )
@@ -294,3 +295,17 @@ def test_cloud_promo_command_on_clears_opt_out(monkeypatch):
     assert "Cloud promo messages enabled" in result.stdout
     assert len(instances) == 1
     assert instances[0].saved_config.cloud_promo_opt_out is False
+
+
+# --- _is_interactive_session tests ---
+
+
+def test_is_interactive_session_returns_false_when_streams_closed(monkeypatch):
+    """isatty() raises ValueError on closed file descriptors (e.g., MCP shutdown)."""
+
+    class ClosedStream:
+        def isatty(self):
+            raise ValueError("I/O operation on closed file")
+
+    monkeypatch.setattr("sys.stdin", ClosedStream())
+    assert _is_interactive_session() is False
