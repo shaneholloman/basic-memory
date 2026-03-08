@@ -10,6 +10,11 @@ from basic_memory.schemas.v2.entity import (
     ProjectResolveRequest,
     ProjectResolveResponse,
 )
+from basic_memory.schemas.v2.graph import (
+    GraphEdge,
+    GraphNode,
+    GraphResponse,
+)
 from basic_memory.schemas.v2.resource import (
     CreateResourceRequest,
     UpdateResourceRequest,
@@ -25,6 +30,9 @@ __all__ = [
     "DeleteDirectoryRequestV2",
     "ProjectResolveRequest",
     "ProjectResolveResponse",
+    "GraphEdge",
+    "GraphNode",
+    "GraphResponse",
     "CreateResourceRequest",
     "UpdateResourceRequest",
     "ResourceResponse",

@@ -20,6 +20,7 @@ from basic_memory.deps import (
     ProjectConfigV2ExternalDep,
     AppConfigDep,
     EntityRepositoryV2ExternalDep,
+    RelationRepositoryV2ExternalDep,
     ProjectExternalIdPathDep,
     TaskSchedulerDep,
     FileServiceV2ExternalDep,
@@ -31,6 +32,9 @@ from basic_memory.schemas.v2 import (
     EntityResolveRequest,
     EntityResolveResponse,
     EntityResponseV2,
+    GraphEdge,
+    GraphNode,
+    GraphResponse,
     MoveEntityRequestV2,
     MoveDirectoryRequestV2,
     DeleteDirectoryRequestV2,
@@ -54,6 +58,50 @@ def _schedule_vector_sync_if_enabled(
             entity_id=entity_id,
             project_id=project_id,
         )
+
+
+## Graph endpoint
+
+
+@router.get("/graph", response_model=GraphResponse)
+async def get_graph(
+    project_id: ProjectExternalIdPathDep,
+    entity_repository: EntityRepositoryV2ExternalDep,
+    relation_repository: RelationRepositoryV2ExternalDep,
+) -> GraphResponse:
+    """Return all entities and resolved relations for knowledge graph visualization.
+
+    Returns a flat node/edge structure optimized for rendering with graph libraries.
+    Only includes resolved relations (where to_id is not null).
+    """
+    logger.info("API v2 request: get_graph")
+
+    # Fetch all entities for this project
+    entities = await entity_repository.find_all(use_load_options=False)
+    nodes = [
+        GraphNode(
+            external_id=entity.external_id,
+            title=entity.title,
+            note_type=entity.note_type,
+            file_path=entity.file_path,
+        )
+        for entity in entities
+    ]
+
+    # Fetch all resolved relations (to_id is not null) with eager-loaded entities
+    relations = await relation_repository.find_all()
+    edges = [
+        GraphEdge(
+            from_id=relation.from_entity.external_id,
+            to_id=relation.to_entity.external_id,
+            relation_type=relation.relation_type,
+        )
+        for relation in relations
+        if relation.to_entity is not None
+    ]
+
+    logger.info(f"API v2 response: graph with {len(nodes)} nodes and {len(edges)} edges")
+    return GraphResponse(nodes=nodes, edges=edges)
 
 
 ## Resolution endpoint
