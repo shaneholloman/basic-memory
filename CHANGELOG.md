@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+## v0.20.0 (2026-03-10)
+
+### Features
+
+- **#643**: Default-on auto-update system and `bm update` command
+  - Automatic background update checks for CLI installs (uv tool, Homebrew)
+  - Install-source detection (homebrew, uv_tool, uvx, unknown) with uvx skip behavior
+  - Periodic check gating via `auto_update_last_checked_at` + `update_check_interval` config
+  - Manager-specific update flows: Homebrew (`brew upgrade`) and uv tool (`uv tool upgrade`)
+  - Silent, non-blocking MCP behavior via daemon thread before server run
+  - Manual commands: `bm update` (force check + apply) and `bm update --check` (check only)
+  - New config fields: `auto_update`, `update_check_interval`, `auto_update_last_checked_at`
+
 ## v0.19.2 (2026-03-09)
 
 ### Bug Fixes
