@@ -252,6 +252,55 @@ async def test_embedding_status_healthy(project_service: ProjectService, test_gr
 
 
 @pytest.mark.asyncio
+async def test_embedding_status_excludes_stale_entity_ids(
+    project_service: ProjectService, test_graph, test_project
+):
+    """Stale rows in search_index for deleted entities should not inflate counts.
+
+    Regression test for #670: after reindex, project info reported missing embeddings
+    because stale entity_ids in search_index/search_vector_chunks inflated total_indexed_entities.
+    """
+    # Insert a stale search_index row for an entity_id that doesn't exist in the entity table.
+    # Include 'id' column — required NOT NULL on Postgres (regular table),
+    # ignored on SQLite (FTS5 virtual table where id is UNINDEXED).
+    stale_entity_id = 999999
+    await project_service.repository.execute_query(
+        text(
+            "INSERT INTO search_index "
+            "(id, entity_id, project_id, type, title, permalink, content_stems, "
+            "content_snippet, file_path, metadata) "
+            "VALUES (:id, :eid, :pid, 'entity', 'Stale Note', 'stale-note', "
+            "'stale content', 'stale snippet', 'stale.md', '{}')"
+        ),
+        {"id": stale_entity_id, "eid": stale_entity_id, "pid": test_project.id},
+    )
+
+    with patch.object(
+        type(project_service),
+        "config_manager",
+        new_callable=lambda: property(
+            lambda self: _config_manager_with(semantic_search_enabled=True)
+        ),
+    ):
+        status = await project_service.get_embedding_status(test_project.id)
+
+    # The stale entity_id should NOT be counted in total_indexed_entities.
+    # Count real entities that have search_index rows (the stale one should be excluded).
+    real_indexed_result = await project_service.repository.execute_query(
+        text(
+            "SELECT COUNT(DISTINCT si.entity_id) FROM search_index si "
+            "JOIN entity e ON e.id = si.entity_id "
+            "WHERE si.project_id = :pid"
+        ),
+        {"pid": test_project.id},
+    )
+    real_indexed_count = real_indexed_result.scalar() or 0
+
+    # Exact match — stale entity_id must not inflate the count
+    assert status.total_indexed_entities == real_indexed_count
+
+
+@pytest.mark.asyncio
 async def test_get_project_info_includes_embedding_status(
     project_service: ProjectService, test_graph, test_project
 ):

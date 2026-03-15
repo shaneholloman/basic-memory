@@ -997,9 +997,18 @@ class ProjectService:
             )
 
         # --- Count queries (tables exist) ---
+        # Filter by entity existence to exclude stale rows from deleted entities
+        # that remain in derived search tables (search_index, search_vector_chunks)
+        entity_exists = "AND entity_id IN (SELECT id FROM entity WHERE project_id = :project_id)"
+        # Same filter for aliased chunks table (used in JOIN queries below)
+        chunk_entity_exists = (
+            "AND c.entity_id IN (SELECT id FROM entity WHERE project_id = :project_id)"
+        )
+
         si_result = await self.repository.execute_query(
             text(
-                "SELECT COUNT(DISTINCT entity_id) FROM search_index WHERE project_id = :project_id"
+                "SELECT COUNT(DISTINCT entity_id) FROM search_index "
+                f"WHERE project_id = :project_id {entity_exists}"
             ),
             {"project_id": project_id},
         )
@@ -1007,7 +1016,10 @@ class ProjectService:
 
         try:
             chunks_result = await self.repository.execute_query(
-                text("SELECT COUNT(*) FROM search_vector_chunks WHERE project_id = :project_id"),
+                text(
+                    "SELECT COUNT(*) FROM search_vector_chunks "
+                    f"WHERE project_id = :project_id {entity_exists}"
+                ),
                 {"project_id": project_id},
             )
             total_chunks = chunks_result.scalar() or 0
@@ -1015,7 +1027,7 @@ class ProjectService:
             entities_with_chunks_result = await self.repository.execute_query(
                 text(
                     "SELECT COUNT(DISTINCT entity_id) FROM search_vector_chunks "
-                    "WHERE project_id = :project_id"
+                    f"WHERE project_id = :project_id {entity_exists}"
                 ),
                 {"project_id": project_id},
             )
@@ -1026,13 +1038,13 @@ class ProjectService:
                 embeddings_sql = text(
                     "SELECT COUNT(*) FROM search_vector_chunks c "
                     "JOIN search_vector_embeddings e ON e.chunk_id = c.id "
-                    "WHERE c.project_id = :project_id"
+                    f"WHERE c.project_id = :project_id {chunk_entity_exists}"
                 )
             else:
                 embeddings_sql = text(
                     "SELECT COUNT(*) FROM search_vector_chunks c "
                     "JOIN search_vector_embeddings e ON e.rowid = c.id "
-                    "WHERE c.project_id = :project_id"
+                    f"WHERE c.project_id = :project_id {chunk_entity_exists}"
                 )
 
             embeddings_result = await self.repository.execute_query(
@@ -1045,13 +1057,13 @@ class ProjectService:
                 orphan_sql = text(
                     "SELECT COUNT(*) FROM search_vector_chunks c "
                     "LEFT JOIN search_vector_embeddings e ON e.chunk_id = c.id "
-                    "WHERE c.project_id = :project_id AND e.chunk_id IS NULL"
+                    f"WHERE c.project_id = :project_id AND e.chunk_id IS NULL {chunk_entity_exists}"
                 )
             else:
                 orphan_sql = text(
                     "SELECT COUNT(*) FROM search_vector_chunks c "
                     "LEFT JOIN search_vector_embeddings e ON e.rowid = c.id "
-                    "WHERE c.project_id = :project_id AND e.rowid IS NULL"
+                    f"WHERE c.project_id = :project_id AND e.rowid IS NULL {chunk_entity_exists}"
                 )
 
             orphan_result = await self.repository.execute_query(
