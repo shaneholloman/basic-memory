@@ -503,12 +503,23 @@ def valid_project_path_value(path: str):
     if not path:
         return True
 
-    # Check for obvious path traversal patterns first
-    if ".." in path or "~" in path:
+    # Check for tilde (home directory expansion)
+    if "~" in path:
         return False
 
-    # Check for Windows-style path traversal (even on Unix systems)
-    if "\\.." in path or path.startswith("\\"):
+    # Check for ".." as a path segment (path traversal), not as a substring.
+    # Filenames like "hi-everyone..md" are legitimate and must not be blocked.
+    # Also block segments like ".. " and ".. ." because Windows normalizes
+    # trailing dots and spaces away, making them equivalent to "..".
+    segments = path.replace("\\", "/").split("/")
+    if any(
+        seg == ".." or (len(seg) > 2 and seg[:2] == ".." and all(c in ". " for c in seg[2:]))
+        for seg in segments
+    ):
+        return False
+
+    # Check for Windows-style leading backslash
+    if path.startswith("\\"):
         return False
 
     # Block absolute paths (Unix-style starting with / or Windows-style with drive letters)
