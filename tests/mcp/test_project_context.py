@@ -312,6 +312,169 @@ async def test_workspace_uses_cached_workspace_without_fetch(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_resolve_project_parameter_uses_cached_active_project_before_api_default_lookup(
+    config_manager, monkeypatch
+):
+    from basic_memory.mcp.project_context import resolve_project_parameter
+    from basic_memory.schemas.project_info import ProjectItem
+
+    config = config_manager.load_config()
+    config.default_project = None
+    config_manager.save_config(config)
+
+    context = _ContextState()
+    cached_project = ProjectItem(
+        id=1,
+        external_id="11111111-1111-1111-1111-111111111111",
+        name="Cached Project",
+        path="/tmp/cached-project",
+        is_default=True,
+    )
+    await context.set_state("active_project", cached_project.model_dump())
+
+    async def fail_if_called():  # pragma: no cover
+        raise AssertionError("Default project API lookup should not run when project is cached")
+
+    monkeypatch.setattr(
+        "basic_memory.mcp.project_context._resolve_default_project_from_api",
+        fail_if_called,
+    )
+
+    resolved = await resolve_project_parameter(project=None, context=context)
+    assert resolved == cached_project.name
+
+
+@pytest.mark.asyncio
+async def test_resolve_project_parameter_caches_api_default_project_name(
+    config_manager, monkeypatch
+):
+    from basic_memory.mcp.project_context import resolve_project_parameter
+
+    config = config_manager.load_config()
+    config.default_project = None
+    config_manager.save_config(config)
+
+    context = _ContextState()
+    api_calls = {"count": 0}
+
+    async def fake_default_lookup():
+        api_calls["count"] += 1
+        return "cloud-default"
+
+    monkeypatch.setattr(
+        "basic_memory.mcp.project_context._resolve_default_project_from_api",
+        fake_default_lookup,
+    )
+
+    first = await resolve_project_parameter(project=None, context=context)
+    second = await resolve_project_parameter(project=None, context=context)
+
+    assert first == "cloud-default"
+    assert second == "cloud-default"
+    assert api_calls["count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_get_active_project_uses_cached_project_before_resolution(monkeypatch):
+    from basic_memory.mcp.project_context import get_active_project
+    from basic_memory.schemas.project_info import ProjectItem
+
+    context = _ContextState()
+    cached_project = ProjectItem(
+        id=1,
+        external_id="11111111-1111-1111-1111-111111111111",
+        name="Cached Project",
+        path="/tmp/cached-project",
+        is_default=True,
+    )
+    await context.set_state("active_project", cached_project.model_dump())
+
+    async def fail_if_called(*args, **kwargs):  # pragma: no cover
+        raise AssertionError("Project resolution should not run when cache matches")
+
+    monkeypatch.setattr(
+        "basic_memory.mcp.project_context.resolve_project_parameter",
+        fail_if_called,
+    )
+
+    resolved = await get_active_project(client=None, context=context)
+    assert resolved == cached_project
+
+
+@pytest.mark.asyncio
+async def test_get_active_project_uses_cached_project_for_explicit_permalink(monkeypatch):
+    from basic_memory.mcp.project_context import get_active_project
+    from basic_memory.schemas.project_info import ProjectItem
+
+    context = _ContextState()
+    cached_project = ProjectItem(
+        id=1,
+        external_id="11111111-1111-1111-1111-111111111111",
+        name="My Research",
+        path="/tmp/my-research",
+        is_default=False,
+    )
+    await context.set_state("active_project", cached_project.model_dump())
+
+    async def fail_if_called(*args, **kwargs):  # pragma: no cover
+        raise AssertionError(
+            "Project resolution should not run when explicit project matches cache"
+        )
+
+    monkeypatch.setattr(
+        "basic_memory.mcp.project_context.resolve_project_parameter",
+        fail_if_called,
+    )
+
+    resolved = await get_active_project(client=None, project="my-research", context=context)
+    assert resolved == cached_project
+
+
+@pytest.mark.asyncio
+async def test_resolve_project_and_path_uses_cached_project_for_memory_url_prefix(
+    config_manager, monkeypatch
+):
+    from basic_memory.mcp.project_context import resolve_project_and_path
+    from basic_memory.schemas.project_info import ProjectItem
+
+    config = config_manager.load_config()
+    config.permalinks_include_project = False
+    config_manager.save_config(config)
+
+    context = _ContextState()
+    cached_project = ProjectItem(
+        id=1,
+        external_id="11111111-1111-1111-1111-111111111111",
+        name="My Research",
+        path="/tmp/my-research",
+        is_default=False,
+    )
+    await context.set_state("active_project", cached_project.model_dump())
+
+    async def fail_if_called(*args, **kwargs):  # pragma: no cover
+        raise AssertionError("Project resolve API should not run when memory URL matches cache")
+
+    async def fake_resolve_project_parameter(project=None, **kwargs):
+        return cached_project.name if project else cached_project.name
+
+    monkeypatch.setattr("basic_memory.mcp.tools.utils.call_post", fail_if_called)
+    monkeypatch.setattr(
+        "basic_memory.mcp.project_context.resolve_project_parameter",
+        fake_resolve_project_parameter,
+    )
+
+    active_project, resolved_path, is_memory_url = await resolve_project_and_path(
+        client=None,
+        identifier="memory://my-research/notes/roadmap.md",
+        context=context,
+    )
+
+    assert active_project == cached_project
+    assert resolved_path == "notes/roadmap.md"
+    assert is_memory_url is True
+
+
+@pytest.mark.asyncio
 async def test_get_project_client_rejects_workspace_for_local_project(config_manager):
     from basic_memory.mcp.project_context import get_project_client
     from basic_memory.config import ProjectEntry
@@ -381,7 +544,6 @@ class TestDetectProjectFromUrlPrefix:
 
         result = detect_project_from_url_prefix("memory://my-research/notes", config)
         assert result == "My Research"
-
 
 
 class TestGetProjectClientRoutingOrder:

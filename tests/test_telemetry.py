@@ -6,7 +6,7 @@ from contextlib import contextmanager
 from contextvars import copy_context
 
 from loguru import logger
-from basic_memory import telemetry
+from basic_memory import __version__, telemetry
 from basic_memory.config import init_api_logging, init_cli_logging, init_mcp_logging
 
 
@@ -212,9 +212,7 @@ def test_scope_creates_span_and_nested_log_context(monkeypatch) -> None:
     finally:
         logger.remove(sink_id)
 
-    assert fake_logfire.span_calls == [
-        ("routing.client_session", {"route_mode": "local_asgi"})
-    ]
+    assert fake_logfire.span_calls == [("routing.client_session", {"route_mode": "local_asgi"})]
     assert records == [{"project_name": "main", "route_mode": "local_asgi"}]
 
 
@@ -270,21 +268,21 @@ def test_init_logging_functions_configure_telemetry_and_logging(monkeypatch) -> 
         {
             "service_name": "basic-memory-cli",
             "environment": "staging",
-            "service_version": "0.20.2",
+            "service_version": __version__,
             "enable_logfire": True,
             "send_to_logfire": False,
         },
         {
             "service_name": "basic-memory-mcp",
             "environment": "staging",
-            "service_version": "0.20.2",
+            "service_version": __version__,
             "enable_logfire": True,
             "send_to_logfire": False,
         },
         {
             "service_name": "basic-memory-api",
             "environment": "staging",
-            "service_version": "0.20.2",
+            "service_version": __version__,
             "enable_logfire": True,
             "send_to_logfire": False,
         },

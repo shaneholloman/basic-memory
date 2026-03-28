@@ -350,7 +350,9 @@ class SyncService:
             # Only resolve relations if there were actual changes
             # If no files changed, no new unresolved relations could have been created
             if report.total > 0:
-                with telemetry.scope("sync.project.resolve_relations", relation_scope="all_pending"):
+                with telemetry.scope(
+                    "sync.project.resolve_relations", relation_scope="all_pending"
+                ):
                     await self.resolve_relations()
             else:
                 logger.info("Skipping relation resolution - no file changes detected")

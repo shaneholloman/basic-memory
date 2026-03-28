@@ -64,6 +64,41 @@ async def _resolve_default_project_from_api() -> Optional[str]:
     return None
 
 
+async def _get_cached_active_project(context: Optional[Context]) -> Optional[ProjectItem]:
+    """Return the cached active project from context when available."""
+    if not context:
+        return None
+
+    cached_raw = await context.get_state("active_project")
+    if isinstance(cached_raw, dict):
+        return ProjectItem.model_validate(cached_raw)
+    return None
+
+
+async def _set_cached_active_project(
+    context: Optional[Context],
+    active_project: ProjectItem,
+) -> None:
+    """Persist the active project and known default-project metadata in context."""
+    if not context:
+        return
+
+    await context.set_state("active_project", active_project.model_dump())
+    if active_project.is_default:
+        await context.set_state("default_project_name", active_project.name)
+
+
+async def _get_cached_default_project(context: Optional[Context]) -> Optional[str]:
+    """Return the cached default project name from context when available."""
+    if not context:
+        return None
+
+    cached_default = await context.get_state("default_project_name")
+    if isinstance(cached_default, str):
+        return cached_default
+    return None
+
+
 def _canonicalize_project_name(
     project_name: Optional[str],
     config: BasicMemoryConfig,
@@ -85,11 +120,23 @@ def _canonicalize_project_name(
     return project_name
 
 
+def _project_matches_identifier(project_item: ProjectItem, identifier: Optional[str]) -> bool:
+    """Return True when the identifier refers to the cached project."""
+    if identifier is None:
+        return True
+
+    normalized_identifier = generate_permalink(identifier)
+    return normalized_identifier in {
+        generate_permalink(project_item.name),
+        project_item.permalink,
+    }
+
 
 async def resolve_project_parameter(
     project: Optional[str] = None,
     allow_discovery: bool = False,
     default_project: Optional[str] = None,
+    context: Optional[Context] = None,
 ) -> Optional[str]:
     """Resolve project parameter using unified linear priority chain.
 
@@ -119,14 +166,32 @@ async def resolve_project_parameter(
     ):
         config = ConfigManager().config
 
-        # Load config for any values not explicitly provided.
-        # ConfigManager reads from the local config file, which doesn't exist in cloud mode.
-        # When it returns None, fall back to querying the projects API for the is_default flag.
-        if default_project is None:
+        # Trigger: project already resolved earlier in the same MCP request
+        # Why: the active project is request-constant, so re-discovering the
+        #   default project via /v2/projects/ just repeats work
+        # Outcome: reuse the cached project name as the explicit candidate
+        if project is None:
+            cached_project = await _get_cached_active_project(context)
+            if cached_project is not None:
+                project = cached_project.name
+
+        # Trigger: there is no explicit project after env/context normalization
+        # Why: default-project discovery is only needed as a fallback; doing it
+        #   for explicit requests adds an avoidable /v2/projects/ round-trip
+        # Outcome: skip default lookup when the active project is already known
+        if default_project is None and project is None:
+            # Load config for any values not explicitly provided.
+            # ConfigManager reads from the local config file, which doesn't exist in cloud mode.
+            # When it returns None, fall back to querying the projects API for the is_default flag.
             default_project = config.default_project
 
-        if default_project is None:
-            default_project = await _resolve_default_project_from_api()
+            if default_project is None:
+                default_project = await _get_cached_default_project(context)
+
+            if default_project is None:
+                default_project = await _resolve_default_project_from_api()
+                if default_project and context:
+                    await context.set_state("default_project_name", default_project)
 
         # Create resolver with configuration and resolve
         resolver = ProjectResolver.from_env(
@@ -290,7 +355,12 @@ async def get_active_project(
         # Deferred import to avoid circular dependency with tools
         from basic_memory.mcp.tools.utils import call_post
 
-        resolved_project = await resolve_project_parameter(project)
+        cached_project = await _get_cached_active_project(context)
+        if cached_project and _project_matches_identifier(cached_project, project):
+            logger.debug(f"Using cached project from context: {cached_project.name}")
+            return cached_project
+
+        resolved_project = await resolve_project_parameter(project, context=context)
         if not resolved_project:
             project_names = await get_project_names(client, headers)
             raise ValueError(
@@ -301,14 +371,9 @@ async def get_active_project(
 
         project = resolved_project
 
-        # Check if already cached in context
-        if context:
-            cached_raw = await context.get_state("active_project")
-            if isinstance(cached_raw, dict):
-                cached_project = ProjectItem.model_validate(cached_raw)
-                if cached_project.name == project:
-                    logger.debug(f"Using cached project from context: {project}")
-                    return cached_project
+        if cached_project and _project_matches_identifier(cached_project, project):
+            logger.debug(f"Using cached project from context: {cached_project.name}")
+            return cached_project
 
         # Validate project exists by calling API
         logger.debug(f"Validating project: {project}")
@@ -328,8 +393,8 @@ async def get_active_project(
         )
 
         # Cache in context if available
+        await _set_cached_active_project(context, active_project)
         if context:
-            await context.set_state("active_project", active_project.model_dump())
             logger.debug(f"Cached project in context: {project}")
 
         logger.debug(f"Validated project: {active_project.name}")
@@ -383,6 +448,21 @@ async def resolve_project_and_path(
         # Why: allow project-scoped memory URLs without requiring a separate project parameter
         # Outcome: attempt to resolve the prefix as a project and route to it
         if project_prefix:
+            cached_project = await _get_cached_active_project(context)
+            if cached_project and _project_matches_identifier(cached_project, project_prefix):
+                resolved_project = await resolve_project_parameter(project_prefix, context=context)
+                if resolved_project and generate_permalink(resolved_project) != generate_permalink(
+                    project_prefix
+                ):
+                    raise ValueError(
+                        f"Project is constrained to '{resolved_project}', cannot use '{project_prefix}'."
+                    )
+
+                resolved_path = (
+                    f"{cached_project.permalink}/{remainder}" if include_project else remainder
+                )
+                return cached_project, resolved_path, True
+
             try:
                 from basic_memory.mcp.tools.utils import call_post
 
@@ -397,7 +477,7 @@ async def resolve_project_and_path(
                 if "project not found" not in str(exc).lower():
                     raise
             else:
-                resolved_project = await resolve_project_parameter(project_prefix)
+                resolved_project = await resolve_project_parameter(project_prefix, context=context)
                 if resolved_project and generate_permalink(resolved_project) != generate_permalink(
                     project_prefix
                 ):
@@ -412,8 +492,7 @@ async def resolve_project_and_path(
                     path=resolved.path,
                     is_default=resolved.is_default,
                 )
-                if context:
-                    await context.set_state("active_project", active_project.model_dump())
+                await _set_cached_active_project(context, active_project)
 
                 resolved_path = (
                     f"{resolved.permalink}/{remainder}" if include_project else remainder
@@ -530,7 +609,7 @@ async def get_project_client(
     )
 
     # Step 1: Resolve project name from config (no network call)
-    resolved_project = await resolve_project_parameter(project)
+    resolved_project = await resolve_project_parameter(project, context=context)
     if not resolved_project:
         # Fall back to local client to discover projects and raise helpful error
         async with get_client() as client:
