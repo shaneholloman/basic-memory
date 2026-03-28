@@ -178,8 +178,13 @@ ContentType = Annotated[
 ]
 
 
-RelationType = Annotated[str, MinLen(1), MaxLen(200)]
-"""Type of relationship between entities. Always use active voice present tense."""
+RelationType = Annotated[str, MinLen(1)]
+"""Type of relationship between entities. Always use active voice present tense.
+
+The database stores relation_type as an unrestricted string, and response models
+need to tolerate existing long-form values written by LLMs. Keeping an API-only
+200-character cap here causes reads to fail for valid stored data.
+"""
 
 ObservationStr = Annotated[
     str,

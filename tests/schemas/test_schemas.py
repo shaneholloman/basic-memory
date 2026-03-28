@@ -91,6 +91,26 @@ def test_relation_response():
     assert relation.context is None
 
 
+def test_relation_response_allows_long_relation_type():
+    """Long relation labels should round-trip because stored data has no DB length cap."""
+    long_relation_type = (
+        "**Architecture/efficiency concern:** "
+        "the orchestration prompt expanded a short edge label into a full descriptive note "
+        "that is much longer than 200 characters but still represents the stored relation type."
+    )
+    data = {
+        "permalink": "test/123/long/test/456",
+        "from_id": "test/123",
+        "to_id": "test/456",
+        "relation_type": long_relation_type,
+        "from_entity": {"permalink": "test/123"},
+        "to_entity": {"permalink": "test/456"},
+    }
+
+    relation = RelationResponse.model_validate(data)
+    assert relation.relation_type == long_relation_type
+
+
 def test_relation_response_with_null_permalink():
     """Test RelationResponse handles null permalinks by falling back to file_path (fixes issue #483).
 

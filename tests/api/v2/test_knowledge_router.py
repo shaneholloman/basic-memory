@@ -138,6 +138,58 @@ async def test_get_entity_by_id(client: AsyncClient, test_graph, v2_project_url,
 
 
 @pytest.mark.asyncio
+async def test_get_entity_by_id_allows_long_relation_type(
+    client: AsyncClient,
+    v2_project_url,
+    relation_repository,
+):
+    """GET entity should not fail when stored relation_type exceeds 200 characters."""
+    source_response = await client.post(
+        f"{v2_project_url}/knowledge/entities",
+        json={
+            "title": "Long Relation Source",
+            "directory": "test",
+            "content": "Source entity content",
+        },
+    )
+    assert source_response.status_code == 200
+    source_entity = EntityResponseV2.model_validate(source_response.json())
+
+    target_response = await client.post(
+        f"{v2_project_url}/knowledge/entities",
+        json={
+            "title": "Long Relation Target",
+            "directory": "test",
+            "content": "Target entity content",
+        },
+    )
+    assert target_response.status_code == 200
+    target_entity = EntityResponseV2.model_validate(target_response.json())
+
+    long_relation_type = (
+        "**Architecture/efficiency concern:** "
+        "the orchestration prompt expanded a short edge label into a full descriptive note "
+        "that is much longer than 200 characters but should still serialize cleanly."
+    )
+
+    await relation_repository.create(
+        {
+            "from_id": source_entity.id,
+            "to_id": target_entity.id,
+            "to_name": target_entity.title,
+            "relation_type": long_relation_type,
+        }
+    )
+
+    response = await client.get(f"{v2_project_url}/knowledge/entities/{source_entity.external_id}")
+
+    assert response.status_code == 200
+    entity = EntityResponseV2.model_validate(response.json())
+    assert len(entity.relations) == 1
+    assert entity.relations[0].relation_type == long_relation_type
+
+
+@pytest.mark.asyncio
 async def test_get_entity_by_id_not_found(client: AsyncClient, v2_project_url):
     """Test getting a non-existent entity by external_id returns 404."""
     # Use a UUID format that doesn't exist
