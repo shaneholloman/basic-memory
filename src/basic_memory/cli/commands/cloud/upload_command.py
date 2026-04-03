@@ -1,5 +1,6 @@
 """Upload CLI commands for basic-memory projects."""
 
+from functools import partial
 from pathlib import Path
 
 import typer
@@ -8,12 +9,16 @@ from rich.console import Console
 from basic_memory.cli.app import cloud_app
 from basic_memory.cli.commands.command_utils import run_with_cleanup
 from basic_memory.cli.commands.cloud.cloud_utils import (
+    CloudUtilsError,
     create_cloud_project,
     project_exists,
     sync_project,
 )
 from basic_memory.cli.commands.cloud.upload import upload_path
-from basic_memory.mcp.async_client import get_cloud_control_plane_client
+from basic_memory.mcp.async_client import (
+    get_cloud_control_plane_client,
+    resolve_configured_workspace,
+)
 
 console = Console()
 
@@ -73,12 +78,20 @@ def upload(
     """
 
     async def _upload():
+        resolved_workspace = resolve_configured_workspace(project_name=project)
+
+        try:
+            project_already_exists = await project_exists(project, workspace=resolved_workspace)
+        except CloudUtilsError as e:
+            console.print(f"[red]Failed to check cloud project '{project}': {e}[/red]")
+            raise typer.Exit(1)
+
         # Check if project exists
-        if not await project_exists(project):
+        if not project_already_exists:
             if create_project:
                 console.print(f"[blue]Creating cloud project '{project}'...[/blue]")
                 try:
-                    await create_cloud_project(project)
+                    await create_cloud_project(project, workspace=resolved_workspace)
                     console.print(f"[green]Created project '{project}'[/green]")
                 except Exception as e:
                     console.print(f"[red]Failed to create project: {e}[/red]")
@@ -106,7 +119,10 @@ def upload(
             verbose=verbose,
             use_gitignore=not no_gitignore,
             dry_run=dry_run,
-            client_cm_factory=get_cloud_control_plane_client,
+            client_cm_factory=partial(
+                get_cloud_control_plane_client,
+                workspace=resolved_workspace,
+            ),
         )
         if not success:
             console.print("[red]Upload failed[/red]")
@@ -117,8 +133,10 @@ def upload(
         else:
             console.print(f"[green]Successfully uploaded to '{project}'[/green]")
 
-        # Sync project if requested (skip on dry run)
-        # Force full scan after bisync to ensure database is up-to-date with synced files
+        # Sync project if requested (skip on dry run).
+        # Trigger: upload adds new files the watcher has not observed locally.
+        # Why: force_full ensures those freshly uploaded files are indexed immediately.
+        # Outcome: upload keeps its eager reindex while sync/bisync stay incremental.
         if sync and not dry_run:
             console.print(f"[blue]Syncing project '{project}'...[/blue]")
             try:

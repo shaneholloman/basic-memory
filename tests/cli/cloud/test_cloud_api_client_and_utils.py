@@ -10,10 +10,12 @@ from basic_memory.cli.commands.cloud.api_client import (
     make_api_request,
 )
 from basic_memory.cli.commands.cloud.cloud_utils import (
+    CloudUtilsError,
     create_cloud_project,
     fetch_cloud_projects,
     project_exists,
 )
+from basic_memory.config import ProjectMode
 
 
 @pytest.mark.asyncio
@@ -163,6 +165,70 @@ async def test_cloud_utils_fetch_and_exists_and_create_project(
     assert created.new_project["name"] == "My Project"
     # Path should be permalink-like (kebab)
     assert seen["create_payload"]["path"] == "my-project"
+
+
+@pytest.mark.asyncio
+async def test_cloud_utils_use_configured_workspace_headers(config_home, config_manager):
+    """Workspace-aware cloud helpers should prefer project workspace over global default."""
+    config = config_manager.load_config()
+    config.cloud_host = "https://cloud.example.test"
+    config.default_workspace = "default-workspace"
+    config.set_project_mode("alpha", ProjectMode.CLOUD)
+    config.projects["alpha"].workspace_id = "project-workspace"
+    config_manager.save_config(config)
+
+    seen: list[tuple[str, str | None]] = []
+
+    async def api_request(**kwargs):
+        seen.append(
+            (
+                kwargs["method"],
+                (kwargs.get("headers") or {}).get("X-Workspace-ID"),
+            )
+        )
+
+        if kwargs["method"] == "GET":
+            return httpx.Response(
+                200,
+                json={
+                    "projects": [{"id": 1, "name": "alpha", "path": "alpha", "is_default": True}]
+                },
+            )
+
+        return httpx.Response(
+            200,
+            json={
+                "message": "created",
+                "status": "success",
+                "default": False,
+                "old_project": None,
+                "new_project": {"name": "alpha", "path": "alpha"},
+            },
+        )
+
+    assert await project_exists("alpha", api_request=api_request) is True
+    await create_cloud_project("alpha", api_request=api_request)
+    await fetch_cloud_projects(project_name="missing", api_request=api_request)
+
+    assert seen == [
+        ("GET", "project-workspace"),
+        ("POST", "project-workspace"),
+        ("GET", "default-workspace"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_project_exists_surfaces_cloud_lookup_failures(config_home, config_manager):
+    """project_exists should surface lookup failures instead of pretending the project is missing."""
+    config = config_manager.load_config()
+    config.cloud_host = "https://cloud.example.test"
+    config_manager.save_config(config)
+
+    async def api_request(**_kwargs):
+        raise httpx.ConnectError("boom")
+
+    with pytest.raises(CloudUtilsError, match="Failed to fetch cloud projects"):
+        await project_exists("alpha", api_request=api_request)
 
 
 @pytest.mark.asyncio
