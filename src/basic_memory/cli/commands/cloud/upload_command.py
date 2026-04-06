@@ -106,6 +106,8 @@ def upload(
                 raise typer.Exit(1)
 
         # Perform upload (or dry run)
+        if resolved_workspace:
+            console.print(f"[dim]Using workspace: {resolved_workspace}[/dim]")
         if dry_run:
             console.print(
                 f"[yellow]DRY RUN: Showing what would be uploaded to '{project}'[/yellow]"

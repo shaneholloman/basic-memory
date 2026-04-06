@@ -12,7 +12,7 @@ from basic_memory.config import ProjectMode
 runner = CliRunner()
 
 
-def test_cloud_upload_uses_control_plane_client(monkeypatch, tmp_path):
+def test_cloud_upload_uses_control_plane_client(monkeypatch, tmp_path, config_manager):
     """Upload command should use control-plane cloud client for WebDAV PUT operations."""
     import basic_memory.cli.commands.cloud.upload_command as upload_command
 

@@ -41,6 +41,10 @@ async def fetch_cloud_projects(
 ) -> CloudProjectList:
     """Fetch list of projects from cloud API.
 
+    Args:
+        project_name: Optional project name for workspace resolution
+        workspace: Cloud workspace tenant_id to list projects from
+
     Returns:
         CloudProjectList with projects from cloud
     """
