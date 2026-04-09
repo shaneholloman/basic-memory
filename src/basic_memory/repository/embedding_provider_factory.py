@@ -1,5 +1,6 @@
 """Factory for creating configured semantic embedding providers."""
 
+import os
 from threading import Lock
 
 from basic_memory.config import BasicMemoryConfig
@@ -18,10 +19,50 @@ type ProviderCacheKey = tuple[
 
 _EMBEDDING_PROVIDER_CACHE: dict[ProviderCacheKey, EmbeddingProvider] = {}
 _EMBEDDING_PROVIDER_CACHE_LOCK = Lock()
+_FASTEMBED_MAX_THREADS = 8
+
+
+def _available_cpu_count() -> int | None:
+    """Return the CPU budget available to this process when the runtime exposes it."""
+    process_cpu_count = getattr(os, "process_cpu_count", None)
+    if callable(process_cpu_count):
+        cpu_count = process_cpu_count()
+        if isinstance(cpu_count, int) and cpu_count > 0:
+            return cpu_count
+
+    cpu_count = os.cpu_count()
+    return cpu_count if cpu_count is not None and cpu_count > 0 else None
+
+
+def _resolve_fastembed_runtime_knobs(
+    app_config: BasicMemoryConfig,
+) -> tuple[int | None, int | None]:
+    """Resolve FastEmbed threads/parallel from explicit config or CPU-aware defaults."""
+    configured_threads = app_config.semantic_embedding_threads
+    configured_parallel = app_config.semantic_embedding_parallel
+    if configured_threads is not None or configured_parallel is not None:
+        return configured_threads, configured_parallel
+
+    available_cpus = _available_cpu_count()
+    if available_cpus is None:
+        return None, None
+
+    # Trigger: local laptops and cloud workers expose different CPU budgets.
+    # Why: full rebuilds got faster when FastEmbed used most, but not all, of
+    # the available CPUs. Leaving a little headroom avoids starving the rest of
+    # the pipeline while still giving ONNX enough threads to stay busy.
+    # Outcome: when config leaves the knobs unset, each process reserves a small
+    # CPU cushion and keeps FastEmbed on the simpler single-process path.
+    if available_cpus <= 2:
+        return available_cpus, 1
+
+    threads = min(_FASTEMBED_MAX_THREADS, max(2, available_cpus - 2))
+    return threads, 1
 
 
 def _provider_cache_key(app_config: BasicMemoryConfig) -> ProviderCacheKey:
     """Build a stable cache key from provider-relevant semantic embedding config."""
+    resolved_threads, resolved_parallel = _resolve_fastembed_runtime_knobs(app_config)
     return (
         app_config.semantic_embedding_provider.strip().lower(),
         app_config.semantic_embedding_model,
@@ -29,8 +70,8 @@ def _provider_cache_key(app_config: BasicMemoryConfig) -> ProviderCacheKey:
         app_config.semantic_embedding_batch_size,
         app_config.semantic_embedding_request_concurrency,
         app_config.semantic_embedding_cache_dir,
-        app_config.semantic_embedding_threads,
-        app_config.semantic_embedding_parallel,
+        resolved_threads,
+        resolved_parallel,
     )
 
 
@@ -61,12 +102,13 @@ def create_embedding_provider(app_config: BasicMemoryConfig) -> EmbeddingProvide
         # Deferred import: fastembed (and its onnxruntime dep) may not be installed
         from basic_memory.repository.fastembed_provider import FastEmbedEmbeddingProvider
 
+        resolved_threads, resolved_parallel = _resolve_fastembed_runtime_knobs(app_config)
         if app_config.semantic_embedding_cache_dir is not None:
             extra_kwargs["cache_dir"] = app_config.semantic_embedding_cache_dir
-        if app_config.semantic_embedding_threads is not None:
-            extra_kwargs["threads"] = app_config.semantic_embedding_threads
-        if app_config.semantic_embedding_parallel is not None:
-            extra_kwargs["parallel"] = app_config.semantic_embedding_parallel
+        if resolved_threads is not None:
+            extra_kwargs["threads"] = resolved_threads
+        if resolved_parallel is not None:
+            extra_kwargs["parallel"] = resolved_parallel
 
         provider = FastEmbedEmbeddingProvider(
             model_name=app_config.semantic_embedding_model,
