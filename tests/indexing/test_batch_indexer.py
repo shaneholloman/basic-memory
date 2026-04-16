@@ -5,16 +5,19 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 from textwrap import dedent
+from unittest.mock import AsyncMock
 
 import pytest
 from sqlalchemy import text
 
+from basic_memory.file_utils import remove_frontmatter
 from basic_memory.indexing import (
     BatchIndexer,
     IndexFrontmatterUpdate,
     IndexFrontmatterWriteResult,
     IndexInputFile,
 )
+from basic_memory.schemas import Entity as EntitySchema
 from basic_memory.services.exceptions import SyncFatalError
 
 
@@ -561,3 +564,174 @@ async def test_batch_indexer_re_raises_fatal_sync_errors(
             limit=1,
             worker=fatal_worker,
         )
+
+
+@pytest.mark.asyncio
+async def test_batch_indexer_index_markdown_file_rewrites_permalink_after_repository_conflict(
+    app_config,
+    entity_service,
+    entity_repository,
+    relation_repository,
+    search_service,
+    file_service,
+    project_config,
+    monkeypatch,
+):
+    existing = await entity_service.create_entity_with_content(
+        EntitySchema(
+            title="Existing Note",
+            directory="notes",
+            content="# Existing Note\n\nOriginal content.\n",
+        )
+    )
+    conflicting_permalink = existing.entity.permalink
+    assert conflicting_permalink is not None
+
+    path = "notes/race.md"
+    await _create_file(
+        project_config.home / path,
+        dedent(
+            f"""\
+            ---
+            title: Race Note
+            type: note
+            permalink: {conflicting_permalink}
+            ---
+
+            # Race Note
+
+            Body content.
+            """
+        ),
+    )
+
+    async def stale_permalink(*args, **kwargs) -> str:
+        return conflicting_permalink
+
+    batch_indexer = _make_batch_indexer(
+        app_config,
+        entity_service,
+        entity_repository,
+        relation_repository,
+        search_service,
+        file_service,
+    )
+
+    monkeypatch.setattr(entity_service, "resolve_permalink", stale_permalink)
+    indexed = await batch_indexer.index_markdown_file(
+        await _load_input(file_service, path),
+        index_search=False,
+    )
+
+    persisted_content = await file_service.read_file_content(path)
+    assert indexed.permalink == f"{conflicting_permalink}-1"
+    assert indexed.markdown_content == persisted_content
+
+
+@pytest.mark.asyncio
+async def test_batch_indexer_strips_frontmatter_from_search_content_when_body_is_empty(
+    app_config,
+    entity_service,
+    entity_repository,
+    relation_repository,
+    search_service,
+    file_service,
+    project_config,
+    monkeypatch,
+):
+    path = "notes/frontmatter-only.md"
+    await _create_file(
+        project_config.home / path,
+        dedent(
+            """
+            ---
+            title: Frontmatter Only
+            type: note
+            status: draft
+            ---
+            """
+        ).strip(),
+    )
+
+    index_entity_data = AsyncMock()
+    monkeypatch.setattr(search_service, "index_entity_data", index_entity_data)
+    batch_indexer = _make_batch_indexer(
+        app_config,
+        entity_service,
+        entity_repository,
+        relation_repository,
+        search_service,
+        file_service,
+    )
+
+    await batch_indexer.index_markdown_file(
+        await _load_input(file_service, path), index_search=True
+    )
+
+    persisted_content = await file_service.read_file_content(path)
+    entity = await entity_repository.get_by_file_path(path)
+    assert entity is not None
+    index_entity_data.assert_awaited_once()
+    await_args = index_entity_data.await_args
+    assert await_args is not None
+    args, kwargs = await_args
+    assert args[0].id == entity.id
+    assert kwargs["content"] == remove_frontmatter(persisted_content)
+
+
+@pytest.mark.asyncio
+async def test_batch_indexer_does_not_inject_frontmatter_when_sync_enforcement_is_disabled(
+    app_config,
+    entity_service,
+    entity_repository,
+    relation_repository,
+    search_service,
+    file_service,
+    project_config,
+    monkeypatch,
+):
+    app_config.ensure_frontmatter_on_sync = False
+
+    created = await entity_service.create_entity_with_content(
+        EntitySchema(
+            title="Frontmatterless",
+            directory="notes",
+            content="# Frontmatterless\n\nOriginal content.\n",
+        )
+    )
+    path = created.entity.file_path
+    assert path is not None
+    existing_permalink = created.entity.permalink
+    assert existing_permalink is not None
+
+    original_content = "# Frontmatterless\n\nBody content.\n"
+    await _create_file(project_config.home / path, original_content)
+
+    original_writer = file_service.update_frontmatter_with_result
+    frontmatter_writer = AsyncMock(side_effect=original_writer)
+    monkeypatch.setattr(file_service, "update_frontmatter_with_result", frontmatter_writer)
+
+    batch_indexer = _make_batch_indexer(
+        app_config,
+        entity_service,
+        entity_repository,
+        relation_repository,
+        search_service,
+        file_service,
+    )
+
+    indexed = await batch_indexer.index_markdown_file(
+        await _load_input(file_service, path),
+        index_search=False,
+    )
+
+    # Trigger: Windows persists CRLF for text files even when the test literal uses LF.
+    # Why: this assertion cares about preserving a frontmatterless file, not about newline style.
+    # Outcome: compare against the exact content stored on disk after sync.
+    persisted_content = (project_config.home / path).read_bytes().decode("utf-8")
+    entity = await entity_repository.get_by_file_path(path)
+    assert entity is not None
+    assert entity.permalink == existing_permalink
+    assert frontmatter_writer.await_count == 0
+    assert indexed.markdown_content == persisted_content
+    assert await file_service.read_file_content(path) == persisted_content
