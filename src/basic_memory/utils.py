@@ -262,7 +262,8 @@ def setup_logging(
 
     Args:
         log_level: DEBUG, INFO, WARNING, ERROR
-        log_to_file: Write to ~/.basic-memory/basic-memory.log with rotation
+        log_to_file: Write to <basic-memory data dir>/basic-memory.log with rotation
+            (honors BASIC_MEMORY_CONFIG_DIR)
         log_to_stdout: Write to stderr (for Docker/cloud deployments)
         structured_context: Bind tenant_id, fly_region, etc. for cloud observability
     """
@@ -281,7 +282,11 @@ def setup_logging(
         # Why: multiple basic-memory processes can share the same log directory at once.
         # Outcome: use per-process log files on Windows so log rotation stays local.
         log_filename = f"basic-memory-{os.getpid()}.log" if os.name == "nt" else "basic-memory.log"
-        log_path = Path.home() / ".basic-memory" / log_filename
+        # Deferred import: basic_memory.config imports from this module at load time,
+        # so resolving the data dir via a top-level import would cycle.
+        from basic_memory.config import resolve_data_dir
+
+        log_path = resolve_data_dir() / log_filename
         log_path.parent.mkdir(parents=True, exist_ok=True)
         if os.name == "nt":
             _cleanup_windows_log_files(log_path.parent, log_path.name)

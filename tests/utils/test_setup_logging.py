@@ -2,6 +2,7 @@
 
 import os
 import sys
+from pathlib import Path
 
 from basic_memory import utils
 
@@ -11,6 +12,7 @@ def test_setup_logging_uses_shared_log_file_off_windows(monkeypatch, tmp_path) -
     added_sinks: list[str] = []
 
     monkeypatch.setenv("BASIC_MEMORY_ENV", "dev")
+    monkeypatch.delenv("BASIC_MEMORY_CONFIG_DIR", raising=False)
     monkeypatch.setattr(utils.os, "name", "posix")
     monkeypatch.setattr(utils.Path, "home", lambda: tmp_path)
     monkeypatch.setattr(utils.logger, "remove", lambda *args, **kwargs: None)
@@ -32,6 +34,7 @@ def test_setup_logging_uses_per_process_log_file_on_windows(monkeypatch, tmp_pat
     added_sinks: list[str] = []
 
     monkeypatch.setenv("BASIC_MEMORY_ENV", "dev")
+    monkeypatch.delenv("BASIC_MEMORY_CONFIG_DIR", raising=False)
     monkeypatch.setattr(utils.os, "name", "nt")
     monkeypatch.setattr(utils.os, "getpid", lambda: 4242)
     monkeypatch.setattr(utils.Path, "home", lambda: tmp_path)
@@ -63,6 +66,7 @@ def test_setup_logging_trims_stale_windows_pid_logs(monkeypatch, tmp_path) -> No
         stale_logs.append(log_path)
 
     monkeypatch.setenv("BASIC_MEMORY_ENV", "dev")
+    monkeypatch.delenv("BASIC_MEMORY_CONFIG_DIR", raising=False)
     monkeypatch.setattr(utils.os, "name", "nt")
     monkeypatch.setattr(utils.os, "getpid", lambda: 4242)
     monkeypatch.setattr(utils.Path, "home", lambda: tmp_path)
@@ -80,6 +84,44 @@ def test_setup_logging_trims_stale_windows_pid_logs(monkeypatch, tmp_path) -> No
         "basic-memory-1004.log",
         "basic-memory-1005.log",
     ]
+
+
+def test_setup_logging_honors_basic_memory_config_dir(monkeypatch, tmp_path) -> None:
+    """Regression guard for #742: log path must follow BASIC_MEMORY_CONFIG_DIR.
+
+    Prior to #742 the log path was hardcoded to ``~/.basic-memory/``, which
+    split state across instances when users set BASIC_MEMORY_CONFIG_DIR to
+    isolate config and the database elsewhere.
+
+    Asserts on the log *directory* rather than the exact filename because
+    Windows uses a per-process ``basic-memory-<pid>.log`` while POSIX
+    shares a single ``basic-memory.log``. The thing this regression guard
+    cares about is that the log lives under the redirected config dir,
+    not at ``Path.home() / ".basic-memory"``. Patching ``utils.os.name``
+    to force one branch would break ``Path(str)`` dispatch on the other
+    platform, so we stay platform-agnostic.
+    """
+    added_sinks: list[str] = []
+
+    custom_dir = tmp_path / "instance-x" / "state"
+    monkeypatch.setenv("BASIC_MEMORY_ENV", "dev")
+    monkeypatch.setenv("BASIC_MEMORY_CONFIG_DIR", str(custom_dir))
+    monkeypatch.setattr(utils.logger, "remove", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        utils.logger,
+        "add",
+        lambda sink, **kwargs: added_sinks.append(str(sink)),
+    )
+    monkeypatch.setattr(utils.telemetry, "get_logfire_handler", lambda: None)
+    monkeypatch.setattr(utils.telemetry, "pop_telemetry_warnings", lambda: [])
+
+    utils.setup_logging(log_to_file=True)
+
+    assert len(added_sinks) == 1
+    log_path = Path(added_sinks[0])
+    assert log_path.parent == custom_dir
+    assert log_path.name.startswith("basic-memory")
+    assert log_path.suffix == ".log"
 
 
 def test_setup_logging_test_env_uses_stderr_only(monkeypatch) -> None:

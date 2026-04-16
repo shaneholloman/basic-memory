@@ -1137,12 +1137,10 @@ class ProjectService:
 
         # Get watch service status if available
         watch_status = None
-        watch_status_path = Path.home() / ".basic-memory" / WATCH_STATUS_JSON
+        watch_status_path = self.config_manager.config.data_dir_path / WATCH_STATUS_JSON
         if watch_status_path.exists():
-            try:  # pragma: no cover
-                watch_status = json.loads(  # pragma: no cover
-                    watch_status_path.read_text(encoding="utf-8")
-                )
+            try:
+                watch_status = json.loads(watch_status_path.read_text(encoding="utf-8"))
             except Exception:  # pragma: no cover
                 pass
 
