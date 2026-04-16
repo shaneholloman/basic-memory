@@ -195,6 +195,103 @@ async def test_sync_one_markdown_file_does_not_reread_for_initial_checksum_when_
 
 
 @pytest.mark.asyncio
+async def test_sync_one_markdown_file_skips_indexing_when_checksum_matches(
+    sync_service,
+    test_project,
+    monkeypatch,
+):
+    """A matching DB checksum is the consistency boundary for derived indexes."""
+    original_content = dedent(
+        f"""\
+        ---
+        title: Already Current
+        type: note
+        permalink: {test_project.name}/notes/already-current
+        ---
+
+        # Already Current
+
+        - [note] Derived indexes are assumed current when the file checksum matches.
+        """
+    )
+    file_path = _write_markdown(
+        Path(test_project.path),
+        "notes/already-current.md",
+        original_content,
+    )
+
+    initial = await sync_service.sync_one_markdown_file(
+        "notes/already-current.md",
+        index_search=False,
+    )
+    assert initial.checksum == await compute_checksum(file_path.read_bytes())
+
+    index_markdown_file = AsyncMock(side_effect=AssertionError("indexer should not run"))
+    index_entity_data = AsyncMock(side_effect=AssertionError("search should not refresh"))
+    monkeypatch.setattr(sync_service.batch_indexer, "index_markdown_file", index_markdown_file)
+    monkeypatch.setattr(sync_service.search_service, "index_entity_data", index_entity_data)
+
+    result = await sync_service.sync_one_markdown_file("notes/already-current.md")
+
+    index_markdown_file.assert_not_awaited()
+    index_entity_data.assert_not_awaited()
+    assert result.entity.id == initial.entity.id
+    assert len(result.entity.observations) == 1
+    assert result.markdown_content == file_path.read_bytes().decode("utf-8")
+    assert result.checksum == initial.checksum
+
+
+@pytest.mark.asyncio
+async def test_sync_one_markdown_file_indexes_when_checksum_differs(
+    sync_service,
+    test_project,
+    monkeypatch,
+):
+    """A DB checksum mismatch still takes the full indexing path."""
+    initial_content = dedent(
+        f"""\
+        ---
+        title: Changed
+        type: note
+        permalink: {test_project.name}/notes/changed
+        ---
+
+        # Changed
+
+        Original body.
+        """
+    )
+    file_path = _write_markdown(
+        Path(test_project.path),
+        "notes/changed.md",
+        initial_content,
+    )
+    initial = await sync_service.sync_one_markdown_file("notes/changed.md", index_search=False)
+
+    updated_content = initial_content.replace("Original body.", "Updated body.")
+    file_path.write_text(updated_content, encoding="utf-8")
+
+    original_index_markdown_file = sync_service.batch_indexer.index_markdown_file
+
+    async def index_markdown_file_spy(*args, **kwargs):
+        return await original_index_markdown_file(*args, **kwargs)
+
+    index_markdown_file = AsyncMock(side_effect=index_markdown_file_spy)
+    index_entity_data = AsyncMock()
+    monkeypatch.setattr(sync_service.batch_indexer, "index_markdown_file", index_markdown_file)
+    monkeypatch.setattr(sync_service.search_service, "index_entity_data", index_entity_data)
+
+    result = await sync_service.sync_one_markdown_file("notes/changed.md")
+
+    index_markdown_file.assert_awaited_once()
+    index_entity_data.assert_awaited_once()
+    assert result.entity.id == initial.entity.id
+    assert result.markdown_content == file_path.read_bytes().decode("utf-8")
+    assert result.checksum == await compute_checksum(file_path.read_bytes())
+    assert result.checksum != initial.checksum
+
+
+@pytest.mark.asyncio
 async def test_sync_markdown_file_remains_tuple_compatible(sync_service, test_project):
     """The legacy tuple-returning API still works for existing callers."""
     _write_markdown(

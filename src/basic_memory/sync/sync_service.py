@@ -1087,6 +1087,22 @@ class SyncService:
         initial_markdown_content = initial_markdown_bytes.decode("utf-8")
         file_metadata = await self.file_service.get_file_metadata(path)
         initial_checksum = await compute_checksum(initial_markdown_bytes)
+        existing_entity = await self.entity_repository.get_by_file_path(path)
+        if existing_entity is not None and existing_entity.checksum == initial_checksum:
+            logger.debug(
+                f"Markdown sync skipped unchanged file: path={path}, "
+                f"entity_id={existing_entity.id}, checksum={initial_checksum[:8]}"
+            )
+            return SyncedMarkdownFile(
+                entity=existing_entity,
+                checksum=initial_checksum,
+                markdown_content=initial_markdown_content,
+                file_path=path,
+                content_type=self.file_service.content_type(path),
+                updated_at=file_metadata.modified_at,
+                size=file_metadata.size,
+            )
+
         indexed = await self.batch_indexer.index_markdown_file(
             IndexInputFile(
                 path=path,
