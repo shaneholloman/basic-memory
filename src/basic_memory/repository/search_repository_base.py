@@ -12,11 +12,12 @@ from dataclasses import dataclass, field, replace
 from datetime import datetime
 from typing import Any, Callable, Dict, List, Optional
 
+import logfire
 from loguru import logger
 from sqlalchemy import Executable, Result, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from basic_memory import db, telemetry
+from basic_memory import db
 from basic_memory.repository.embedding_provider import EmbeddingProvider
 from basic_memory.repository.search_index_row import SearchIndexRow
 from basic_memory.repository.semantic_errors import (
@@ -845,7 +846,7 @@ class SearchRepositoryBase(ABC):
             progress_callback(entity_id, completed_entities, total_entities)
 
         prepare_window_size = self._vector_prepare_window_size()
-        with telemetry.started_span(
+        with logfire.span(
             "basic_memory.vector_sync.batch",
             project_id=self.project_id,
             backend=backend_name,
@@ -1068,48 +1069,42 @@ class SearchRepositoryBase(ABC):
                 write_seconds_total=result.write_seconds_total,
             )
             batch_total_seconds = time.perf_counter() - batch_start
-            telemetry.record_histogram(
-                "vector_sync_batch_total_seconds",
-                batch_total_seconds,
-                unit="s",
-                backend=backend_name,
-                skip_only_batch=result.embedding_jobs_total == 0,
+            batch_attrs = {
+                "backend": backend_name,
+                "skip_only_batch": result.embedding_jobs_total == 0,
+            }
+            logfire.metric_histogram("vector_sync_batch_total_seconds", unit="s").record(
+                batch_total_seconds, attributes=batch_attrs
             )
-            telemetry.add_counter(
-                "vector_sync_entities_total",
-                result.entities_total,
-                backend=backend_name,
-                skip_only_batch=result.embedding_jobs_total == 0,
+            logfire.metric_histogram("vector_sync_prepare_seconds", unit="s").record(
+                result.prepare_seconds_total, attributes=batch_attrs
             )
-            telemetry.add_counter(
-                "vector_sync_entities_skipped",
-                result.entities_skipped,
-                backend=backend_name,
-                skip_only_batch=result.embedding_jobs_total == 0,
+            logfire.metric_histogram("vector_sync_queue_wait_seconds", unit="s").record(
+                result.queue_wait_seconds_total, attributes=batch_attrs
             )
-            telemetry.add_counter(
-                "vector_sync_entities_deferred",
-                result.entities_deferred,
-                backend=backend_name,
-                skip_only_batch=result.embedding_jobs_total == 0,
+            logfire.metric_histogram("vector_sync_embed_seconds", unit="s").record(
+                result.embed_seconds_total, attributes=batch_attrs
             )
-            telemetry.add_counter(
-                "vector_sync_embedding_jobs_total",
-                result.embedding_jobs_total,
-                backend=backend_name,
-                skip_only_batch=result.embedding_jobs_total == 0,
+            logfire.metric_histogram("vector_sync_write_seconds", unit="s").record(
+                result.write_seconds_total, attributes=batch_attrs
             )
-            telemetry.add_counter(
-                "vector_sync_chunks_total",
-                result.chunks_total,
-                backend=backend_name,
-                skip_only_batch=result.embedding_jobs_total == 0,
+            logfire.metric_counter("vector_sync_entities_total").add(
+                result.entities_total, attributes=batch_attrs
             )
-            telemetry.add_counter(
-                "vector_sync_chunks_skipped",
-                result.chunks_skipped,
-                backend=backend_name,
-                skip_only_batch=result.embedding_jobs_total == 0,
+            logfire.metric_counter("vector_sync_entities_skipped").add(
+                result.entities_skipped, attributes=batch_attrs
+            )
+            logfire.metric_counter("vector_sync_entities_deferred").add(
+                result.entities_deferred, attributes=batch_attrs
+            )
+            logfire.metric_counter("vector_sync_embedding_jobs_total").add(
+                result.embedding_jobs_total, attributes=batch_attrs
+            )
+            logfire.metric_counter("vector_sync_chunks_total").add(
+                result.chunks_total, attributes=batch_attrs
+            )
+            logfire.metric_counter("vector_sync_chunks_skipped").add(
+                result.chunks_skipped, attributes=batch_attrs
             )
             if batch_span is not None:
                 batch_span.set_attributes(
@@ -1682,36 +1677,12 @@ class SearchRepositoryBase(ABC):
         shard_count: int,
         remaining_jobs_after_shard: int,
     ) -> None:
-        """Log completion and slow-entity warnings with a consistent format."""
-        backend_name = type(self).__name__.removesuffix("SearchRepository").lower()
-        telemetry.record_histogram(
-            "vector_sync_prepare_seconds",
-            prepare_seconds,
-            unit="s",
-            backend=backend_name,
-            skip_only_entity=entity_skipped and embedding_jobs_count == 0,
-        )
-        telemetry.record_histogram(
-            "vector_sync_queue_wait_seconds",
-            queue_wait_seconds,
-            unit="s",
-            backend=backend_name,
-            skip_only_entity=entity_skipped and embedding_jobs_count == 0,
-        )
-        telemetry.record_histogram(
-            "vector_sync_embed_seconds",
-            embed_seconds,
-            unit="s",
-            backend=backend_name,
-            skip_only_entity=entity_skipped and embedding_jobs_count == 0,
-        )
-        telemetry.record_histogram(
-            "vector_sync_write_seconds",
-            write_seconds,
-            unit="s",
-            backend=backend_name,
-            skip_only_entity=entity_skipped and embedding_jobs_count == 0,
-        )
+        """Log completion and slow-entity warnings with a consistent format.
+
+        Per-entity timings are aggregated into `VectorSyncBatchResult` and
+        recorded as batch-level histograms once the batch completes — this
+        function stays on the per-entity hot path so it only emits logs.
+        """
         if total_seconds > 10:
             logger.warning(
                 "Vector sync slow entity: project_id={project_id} entity_id={entity_id} "

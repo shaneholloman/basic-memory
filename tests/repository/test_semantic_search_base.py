@@ -696,17 +696,31 @@ async def test_sync_entity_vectors_batch_records_entity_granularity_histograms(m
     counter_calls: list[tuple[str, float, dict]] = []
     perf_counter_values = iter([0.0, 3.0, 4.5, 6.0])
 
+    class _FakeHistogram:
+        def __init__(self, name: str) -> None:
+            self.name = name
+
+        def record(self, amount, attributes=None) -> None:
+            histogram_calls.append((self.name, amount, attributes or {}))
+
+    class _FakeCounter:
+        def __init__(self, name: str) -> None:
+            self.name = name
+
+        def add(self, amount, attributes=None) -> None:
+            counter_calls.append((self.name, amount, attributes or {}))
+
     monkeypatch.setattr(repo, "_prepare_entity_vector_jobs_window", _stub_prepare_window)
     monkeypatch.setattr(repo, "_flush_embedding_jobs", _stub_flush)
     monkeypatch.setattr(
-        search_repository_base_module.telemetry,
-        "record_histogram",
-        lambda name, amount, **attrs: histogram_calls.append((name, amount, attrs)),
+        search_repository_base_module.logfire,
+        "metric_histogram",
+        lambda name, **kwargs: _FakeHistogram(name),
     )
     monkeypatch.setattr(
-        search_repository_base_module.telemetry,
-        "add_counter",
-        lambda name, amount, **attrs: counter_calls.append((name, amount, attrs)),
+        search_repository_base_module.logfire,
+        "metric_counter",
+        lambda name, **kwargs: _FakeCounter(name),
     )
     monkeypatch.setattr(
         search_repository_base_module.time,
@@ -716,12 +730,14 @@ async def test_sync_entity_vectors_batch_records_entity_granularity_histograms(m
 
     result = await repo.sync_entity_vectors_batch([1, 2])
 
+    # Batch-level histograms record once per batch using aggregated totals
+    # from VectorSyncBatchResult — not per entity. See _sync_entity_vectors_internal.
     assert result.entities_synced == 2
     histogram_names = [name for name, _, _ in histogram_calls]
-    assert histogram_names.count("vector_sync_prepare_seconds") == 2
-    assert histogram_names.count("vector_sync_queue_wait_seconds") == 2
-    assert histogram_names.count("vector_sync_embed_seconds") == 2
-    assert histogram_names.count("vector_sync_write_seconds") == 2
+    assert histogram_names.count("vector_sync_prepare_seconds") == 1
+    assert histogram_names.count("vector_sync_queue_wait_seconds") == 1
+    assert histogram_names.count("vector_sync_embed_seconds") == 1
+    assert histogram_names.count("vector_sync_write_seconds") == 1
     assert histogram_names.count("vector_sync_batch_total_seconds") == 1
     assert [name for name, _, _ in counter_calls].count("vector_sync_entities_total") == 1
 

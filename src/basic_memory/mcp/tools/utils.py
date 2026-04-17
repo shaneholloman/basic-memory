@@ -6,8 +6,9 @@ to the Basic Memory API, with improved error handling and logging.
 
 import typing
 from contextlib import contextmanager
-from typing import Optional
+from typing import Any, Optional
 
+import logfire
 from httpx import Response, URL, AsyncClient, HTTPStatusError
 from httpx._client import UseClientDefault, USE_CLIENT_DEFAULT
 from httpx._types import (
@@ -24,7 +25,6 @@ from httpx._types import (
 from loguru import logger
 from mcp.server.fastmcp.exceptions import ToolError
 
-from basic_memory import telemetry
 from basic_memory.config import ConfigManager
 
 
@@ -41,43 +41,22 @@ def _classify_http_outcome(status_code: int) -> str:
     return "unknown"  # pragma: no cover
 
 
-class _RequestSpan:
-    """Small adapter for attaching outcome metadata to a live request span."""
+def _response_span_attrs(response: Response) -> dict[str, Any]:
+    """Attributes to attach to a request span after a response lands."""
+    return {
+        "status_code": response.status_code,
+        "is_success": response.is_success,
+        "outcome": _classify_http_outcome(response.status_code),
+    }
 
-    def __init__(self, active_span: typing.Any | None):
-        self._active_span = active_span
 
-    def record_response(self, response: Response) -> None:
-        self._set_attributes(
-            {
-                "status_code": response.status_code,
-                "is_success": response.is_success,
-                "outcome": _classify_http_outcome(response.status_code),
-            }
-        )
-
-    def record_transport_error(self, exc: Exception) -> None:
-        self._set_attributes(
-            {
-                "is_success": False,
-                "outcome": "transport_error",
-                "error_type": type(exc).__name__,
-            }
-        )
-
-    def _set_attributes(self, attrs: dict[str, typing.Any]) -> None:
-        if self._active_span is None:
-            return
-
-        set_attributes = getattr(self._active_span, "set_attributes", None)
-        if callable(set_attributes):
-            set_attributes(attrs)
-            return
-
-        set_attribute = getattr(self._active_span, "set_attribute", None)
-        if callable(set_attribute):
-            for key, value in attrs.items():
-                set_attribute(key, value)
+def _transport_error_span_attrs(exc: Exception) -> dict[str, Any]:
+    """Attributes to attach when the transport layer fails before any response."""
+    return {
+        "is_success": False,
+        "outcome": "transport_error",
+        "error_type": type(exc).__name__,
+    }
 
 
 def get_error_message(
@@ -130,15 +109,20 @@ def get_error_message(
         return f"HTTP error {status_code}: {method} request to '{path}' failed"
 
 
-def _extract_response_data(response: Response) -> typing.Any:
-    """Safely decode response payload for error reporting."""
-    try:
-        return response.json()
-    except Exception:
+def _extract_response_data(response: Response) -> Any:
+    """Decode the JSON payload of an API response for error reporting.
+
+    Upstream gateways (Fly, Cloudflare, load balancers) can return HTML
+    error pages before the request reaches our FastAPI app; those have no
+    structured `detail` to surface, so we skip them. A malformed body with
+    a JSON content-type is a server bug and we let it raise.
+    """
+    if "application/json" not in response.headers.get("content-type", ""):
         return None
+    return response.json()
 
 
-def _response_detail_text(response_data: typing.Any) -> str | None:
+def _response_detail_text(response_data: Any) -> str | None:
     """Extract textual error detail from API payloads."""
     if isinstance(response_data, dict):
         detail = response_data.get("detail")
@@ -189,31 +173,6 @@ def _resolve_error_message(
     return get_error_message(status_code, url, method)
 
 
-@contextmanager
-def _request_scope(
-    method: str,
-    *,
-    client_name: str | None,
-    operation: str | None,
-    path_template: str | None,
-    params: QueryParamTypes | None = None,
-    has_body: bool = False,
-):
-    """Create the shared MCP transport span used by all HTTP helpers."""
-    attrs = {
-        "method": method,
-        "client_name": client_name,
-        "operation": operation,
-        "path_template": path_template,
-        "phase": "request",
-        "has_query": bool(params),
-        "has_body": has_body,
-    }
-    with telemetry.contextualize(**attrs):
-        with telemetry.started_span("mcp.http.request", **attrs) as active_span:
-            yield _RequestSpan(active_span)
-
-
 async def call_get(
     client: AsyncClient,
     url: URL | str,
@@ -250,15 +209,18 @@ async def call_get(
     """
     logger.debug(f"Calling GET '{url}' params: '{params}'")
     error_message = None
-    request_span: _RequestSpan | None = None
+    request_span: logfire.LogfireSpan | None = None
 
     try:
-        with _request_scope(
-            "GET",
+        with logfire.span(
+            "mcp.http.request",
+            method="GET",
             client_name=client_name,
             operation=operation,
             path_template=path_template,
-            params=params,
+            phase="request",
+            has_query=bool(params),
+            has_body=False,
         ) as request_span:
             response = await client.get(
                 url,
@@ -270,7 +232,7 @@ async def call_get(
                 timeout=timeout,
                 extensions=extensions,
             )
-            request_span.record_response(response)
+            request_span.set_attributes(_response_span_attrs(response))
 
         if response.is_success:
             return response
@@ -299,7 +261,7 @@ async def call_get(
         raise ToolError(error_message) from e
     except Exception as e:
         if request_span is not None:
-            request_span.record_transport_error(e)
+            request_span.set_attributes(_transport_error_span_attrs(e))
         raise
 
 
@@ -347,15 +309,17 @@ async def call_put(
     """
     logger.debug(f"Calling PUT '{url}'")
     error_message = None
-    request_span: _RequestSpan | None = None
+    request_span: logfire.LogfireSpan | None = None
 
     try:
-        with _request_scope(
-            "PUT",
+        with logfire.span(
+            "mcp.http.request",
+            method="PUT",
             client_name=client_name,
             operation=operation,
             path_template=path_template,
-            params=params,
+            phase="request",
+            has_query=bool(params),
             has_body=any(value is not None for value in (content, data, files, json)),
         ) as request_span:
             response = await client.put(
@@ -372,7 +336,7 @@ async def call_put(
                 timeout=timeout,
                 extensions=extensions,
             )
-            request_span.record_response(response)
+            request_span.set_attributes(_response_span_attrs(response))
 
         if response.is_success:
             return response
@@ -402,7 +366,7 @@ async def call_put(
         raise ToolError(error_message) from e
     except Exception as e:
         if request_span is not None:
-            request_span.record_transport_error(e)
+            request_span.set_attributes(_transport_error_span_attrs(e))
         raise
 
 
@@ -449,15 +413,17 @@ async def call_patch(
         ToolError: If the request fails with an appropriate error message
     """
     logger.debug(f"Calling PATCH '{url}'")
-    request_span: _RequestSpan | None = None
+    request_span: logfire.LogfireSpan | None = None
 
     try:
-        with _request_scope(
-            "PATCH",
+        with logfire.span(
+            "mcp.http.request",
+            method="PATCH",
             client_name=client_name,
             operation=operation,
             path_template=path_template,
-            params=params,
+            phase="request",
+            has_query=bool(params),
             has_body=any(value is not None for value in (content, data, files, json)),
         ) as request_span:
             response = await client.patch(
@@ -474,7 +440,7 @@ async def call_patch(
                 timeout=timeout,
                 extensions=extensions,
             )
-            request_span.record_response(response)
+            request_span.set_attributes(_response_span_attrs(response))
 
         if response.is_success:
             return response
@@ -509,7 +475,7 @@ async def call_patch(
         raise ToolError(error_message) from e
     except Exception as e:
         if request_span is not None:
-            request_span.record_transport_error(e)
+            request_span.set_attributes(_transport_error_span_attrs(e))
         raise
 
 
@@ -557,15 +523,17 @@ async def call_post(
     """
     logger.debug(f"Calling POST '{url}'")
     error_message = None
-    request_span: _RequestSpan | None = None
+    request_span: logfire.LogfireSpan | None = None
 
     try:
-        with _request_scope(
-            "POST",
+        with logfire.span(
+            "mcp.http.request",
+            method="POST",
             client_name=client_name,
             operation=operation,
             path_template=path_template,
-            params=params,
+            phase="request",
+            has_query=bool(params),
             has_body=any(value is not None for value in (content, data, files, json)),
         ) as request_span:
             response = await client.post(
@@ -582,7 +550,7 @@ async def call_post(
                 timeout=timeout,
                 extensions=extensions,
             )
-            request_span.record_response(response)
+            request_span.set_attributes(_response_span_attrs(response))
         logger.debug(f"response: {_extract_response_data(response)}")
 
         if response.is_success:
@@ -612,7 +580,7 @@ async def call_post(
         raise ToolError(error_message) from e
     except Exception as e:
         if request_span is not None:
-            request_span.record_transport_error(e)
+            request_span.set_attributes(_transport_error_span_attrs(e))
         raise
 
 
@@ -684,15 +652,18 @@ async def call_delete(
     """
     logger.debug(f"Calling DELETE '{url}'")
     error_message = None
-    request_span: _RequestSpan | None = None
+    request_span: logfire.LogfireSpan | None = None
 
     try:
-        with _request_scope(
-            "DELETE",
+        with logfire.span(
+            "mcp.http.request",
+            method="DELETE",
             client_name=client_name,
             operation=operation,
             path_template=path_template,
-            params=params,
+            phase="request",
+            has_query=bool(params),
+            has_body=False,
         ) as request_span:
             response = await client.delete(
                 url=url,
@@ -704,7 +675,7 @@ async def call_delete(
                 timeout=timeout,
                 extensions=extensions,
             )
-            request_span.record_response(response)
+            request_span.set_attributes(_response_span_attrs(response))
 
         if response.is_success:
             return response
@@ -733,5 +704,5 @@ async def call_delete(
         raise ToolError(error_message) from e
     except Exception as e:
         if request_span is not None:
-            request_span.record_transport_error(e)
+            request_span.set_attributes(_transport_error_span_attrs(e))
         raise
