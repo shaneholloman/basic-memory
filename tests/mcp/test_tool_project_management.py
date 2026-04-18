@@ -47,7 +47,7 @@ def _make_list(projects: list[ProjectItem], default: str | None = None) -> Proje
 async def test_list_memory_projects_unconstrained(app, test_project):
     result = await list_memory_projects()
     assert "Available projects:" in result
-    assert f"• {test_project.name}" in result
+    assert f"- {test_project.name}" in result
 
 
 @pytest.mark.asyncio
@@ -77,9 +77,9 @@ async def test_list_memory_projects_shows_display_name(app, client, test_project
         result = await list_memory_projects()
 
     # Regular project shows name with source label
-    assert "• main (local)" in result
+    assert "- main (local)" in result
     # Private project shows display_name with slug in parentheses, then source
-    assert "• My Notes (private-fb83af23) (local)" in result
+    assert "- My Notes (private-fb83af23) (local)" in result
 
 
 @pytest.mark.asyncio
@@ -95,7 +95,7 @@ async def test_list_memory_projects_no_display_name_shows_name_only(app, client,
     ):
         result = await list_memory_projects()
 
-    assert "• my-project (local)" in result
+    assert "- my-project (local)" in result
 
 
 @pytest.mark.asyncio
@@ -149,7 +149,13 @@ async def test_list_memory_projects_local_and_cloud_merge(app, test_project):
     cloud_llc = _make_project(
         "basic-memory-llc", "/basic-memory-llc", id=11, external_id="cloud-llc-uuid"
     )
-    cloud_list = _make_list([cloud_main, cloud_llc], default="main")
+    workspace = _make_workspace(
+        "personal-tenant",
+        "Personal",
+        slug="personal",
+        is_default=True,
+    )
+    workspace_index = _make_workspace_index([(workspace, [cloud_main, cloud_llc])])
 
     with (
         patch(
@@ -162,19 +168,19 @@ async def test_list_memory_projects_local_and_cloud_merge(app, test_project):
             return_value=True,
         ),
         patch(
-            "basic_memory.mcp.tools.project_management._fetch_cloud_projects",
+            "basic_memory.mcp.tools.project_management.ensure_workspace_project_index",
             new_callable=AsyncMock,
-            return_value=cloud_list,
+            return_value=workspace_index,
         ),
     ):
         result = await list_memory_projects()
 
     # Both local+cloud project shows merged source
-    assert "• main (local+cloud)" in result
+    assert "- main (local+cloud)" in result
     # Local-only project
-    assert "• specs (local)" in result
+    assert "- specs (local)" in result
     # Cloud-only project
-    assert "• basic-memory-llc (cloud)" in result
+    assert "- basic-memory-llc (cloud)" in result
 
 
 @pytest.mark.asyncio
@@ -187,7 +193,7 @@ async def test_list_memory_projects_no_cloud_credentials(app, test_project):
         result = await list_memory_projects()
 
     assert "Available projects:" in result
-    assert f"• {test_project.name} (local)" in result
+    assert f"- {test_project.name} (local)" in result
     # No cloud source labels
     assert "cloud)" not in result
 
@@ -201,15 +207,44 @@ async def test_list_memory_projects_cloud_failure_graceful(app, test_project):
             return_value=True,
         ),
         patch(
-            "basic_memory.mcp.tools.project_management._fetch_cloud_projects",
+            "basic_memory.mcp.tools.project_management.ensure_workspace_project_index",
             new_callable=AsyncMock,
-            return_value=None,
+            side_effect=RuntimeError("cloud unavailable"),
         ),
     ):
         result = await list_memory_projects()
 
     assert "Available projects:" in result
-    assert f"• {test_project.name} (local)" in result
+    assert f"- {test_project.name} (local)" in result
+
+
+@pytest.mark.asyncio
+async def test_list_memory_projects_explicit_workspace_discovery_failure_graceful(
+    app,
+    test_project,
+):
+    """Explicit workspace discovery failure still returns the local project list."""
+    with (
+        patch(
+            "basic_memory.mcp.tools.project_management.has_cloud_credentials",
+            return_value=True,
+        ),
+        patch(
+            "basic_memory.mcp.tools.project_management.resolve_workspace_parameter",
+            new_callable=AsyncMock,
+            side_effect=RuntimeError("workspace discovery unavailable"),
+        ),
+        patch(
+            "basic_memory.mcp.tools.project_management._fetch_cloud_projects",
+            new_callable=AsyncMock,
+            return_value=None,
+        ) as mock_fetch,
+    ):
+        result = await list_memory_projects(workspace="tenant-abc")
+
+    mock_fetch.assert_awaited_once_with("tenant-abc", None)
+    assert "Available projects:" in result
+    assert f"- {test_project.name} (local)" in result
 
 
 @pytest.mark.asyncio
@@ -238,7 +273,7 @@ async def test_list_memory_projects_factory_mode(app, test_project):
     ):
         result = await list_memory_projects()
 
-    assert "• cloud-proj (cloud)" in result
+    assert "- cloud-proj (cloud)" in result
 
 
 @pytest.mark.asyncio
@@ -277,6 +312,9 @@ async def test_list_memory_projects_factory_mode_json_includes_workspace(app, te
     assert proj["workspace_name"] == "My Org"
     assert proj["workspace_type"] == "organization"
     assert proj["workspace_tenant_id"] == "tenant-abc"
+    assert proj["workspace_slug"] == "my-org"
+    assert proj["workspace_is_default"] is False
+    assert proj["qualified_name"] == "my-org/cloud-proj"
 
 
 @pytest.mark.asyncio
@@ -304,7 +342,7 @@ async def test_list_memory_projects_factory_mode_workspace_lookup_failure(app, t
         result = await list_memory_projects()
 
     # Still reported as cloud even without workspace metadata
-    assert "• cloud-proj (cloud)" in result
+    assert "- cloud-proj (cloud)" in result
 
 
 @pytest.mark.asyncio
@@ -349,7 +387,13 @@ async def test_list_memory_projects_json_with_cloud(app, test_project):
 
     cloud_main = _make_project("main", "/main", id=10, external_id="cloud-main-uuid")
     cloud_only = _make_project("cloud-only", "/cloud-only", id=11, external_id="cloud-only-uuid")
-    cloud_list = _make_list([cloud_main, cloud_only], default="main")
+    workspace = _make_workspace(
+        "personal-tenant",
+        "Personal",
+        slug="personal",
+        is_default=True,
+    )
+    workspace_index = _make_workspace_index([(workspace, [cloud_main, cloud_only])])
 
     with (
         patch(
@@ -362,9 +406,9 @@ async def test_list_memory_projects_json_with_cloud(app, test_project):
             return_value=True,
         ),
         patch(
-            "basic_memory.mcp.tools.project_management._fetch_cloud_projects",
+            "basic_memory.mcp.tools.project_management.ensure_workspace_project_index",
             new_callable=AsyncMock,
-            return_value=cloud_list,
+            return_value=workspace_index,
         ),
     ):
         result = await list_memory_projects(output_format="json")
@@ -391,6 +435,8 @@ async def test_list_memory_projects_json_with_cloud(app, test_project):
     assert cloud_proj["local_path"] is None
     assert cloud_proj["cloud_path"] == "/cloud-only"
     assert cloud_proj["path"] == "/cloud-only"
+    assert cloud_proj["workspace_slug"] == "personal"
+    assert cloud_proj["qualified_name"] == "personal/cloud-only"
 
 
 # --- Unit test for _merge_projects ---
@@ -473,6 +519,8 @@ def _make_workspace(
     workspace_type: str = "personal",
     role: str = "owner",
     organization_id: str | None = None,
+    slug: str | None = None,
+    is_default: bool = False,
 ):
     """Create a WorkspaceInfo for testing."""
     from basic_memory.schemas.cloud import WorkspaceInfo
@@ -481,10 +529,28 @@ def _make_workspace(
         tenant_id=tenant_id,
         name=name,
         workspace_type=workspace_type,
+        slug=slug or name.casefold().replace(" ", "-"),
         role=role,
         organization_id=organization_id,
+        is_default=is_default,
         has_active_subscription=True,
     )
+
+
+def _make_workspace_index(workspace_projects):
+    """Create a WorkspaceProjectIndex from (workspace, projects) tuples."""
+    from basic_memory.mcp.project_context import (
+        WorkspaceProjectEntry,
+        _build_workspace_project_index,
+    )
+
+    workspaces = tuple(workspace for workspace, _projects in workspace_projects)
+    entries = tuple(
+        WorkspaceProjectEntry(workspace=workspace, project=project)
+        for workspace, projects in workspace_projects
+        for project in projects
+    )
+    return _build_workspace_project_index(workspaces, entries)
 
 
 @pytest.mark.asyncio
@@ -514,9 +580,16 @@ async def test_list_memory_projects_passes_explicit_workspace(app, test_project)
 
 
 @pytest.mark.asyncio
-async def test_list_memory_projects_falls_back_to_config_workspace(app, test_project):
-    """When no explicit workspace is given, config.default_workspace is used."""
-    cloud_list = _make_list([_make_project("cloud-proj", "/cloud-proj")])
+async def test_list_memory_projects_aggregates_without_config_workspace(app, test_project):
+    """When no explicit workspace is given, cloud discovery fans out across workspaces."""
+    cloud_project = _make_project("cloud-proj", "/cloud-proj")
+    workspace = _make_workspace(
+        "config-default-ws",
+        "Default WS",
+        slug="default",
+        is_default=True,
+    )
+    workspace_index = _make_workspace_index([(workspace, [cloud_project])])
 
     with (
         patch("basic_memory.mcp.tools.project_management.ConfigManager") as mock_cm_cls,
@@ -525,21 +598,17 @@ async def test_list_memory_projects_falls_back_to_config_workspace(app, test_pro
             return_value=True,
         ),
         patch(
-            "basic_memory.mcp.tools.project_management._fetch_cloud_projects",
+            "basic_memory.mcp.tools.project_management.ensure_workspace_project_index",
             new_callable=AsyncMock,
-            return_value=cloud_list,
-        ) as mock_fetch,
-        patch(
-            "basic_memory.mcp.project_context.get_available_workspaces",
-            new_callable=AsyncMock,
-            return_value=[_make_workspace("config-default-ws", "Default WS")],
-        ),
+            return_value=workspace_index,
+        ) as mock_index,
     ):
         mock_config = mock_cm_cls.return_value.config
         mock_config.default_workspace = "config-default-ws"
-        await list_memory_projects()
+        result = await list_memory_projects()
 
-    mock_fetch.assert_awaited_once_with("config-default-ws", None)
+    mock_index.assert_awaited_once()
+    assert "- cloud-proj (cloud) [default/cloud-proj]" in result
 
 
 @pytest.mark.asyncio
